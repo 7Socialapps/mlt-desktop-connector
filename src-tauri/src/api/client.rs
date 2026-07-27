@@ -23,6 +23,9 @@ pub enum ApiClientError {
 pub struct AuthHeaders {
     pub device_access_token: Option<String>,
     pub neon_session_token: Option<String>,
+    pub pairing_session_id: Option<String>,
+    pub pairing_session_secret: Option<String>,
+    pub scoped_job_token: Option<String>,
 }
 
 pub struct ConnectorApiClient {
@@ -89,6 +92,36 @@ impl ConnectorApiClient {
                 })?,
             );
         }
+        if let Some(session) = &auth.pairing_session_id {
+            headers.insert(
+                "x-connector-pairing-session",
+                HeaderValue::from_str(session).map_err(|e| ApiClientError::Http {
+                    status: 0,
+                    message: e.to_string(),
+                    code: None,
+                })?,
+            );
+        }
+        if let Some(secret) = &auth.pairing_session_secret {
+            headers.insert(
+                "x-connector-pairing-secret",
+                HeaderValue::from_str(secret).map_err(|e| ApiClientError::Http {
+                    status: 0,
+                    message: e.to_string(),
+                    code: None,
+                })?,
+            );
+        }
+        if let Some(job_token) = &auth.scoped_job_token {
+            headers.insert(
+                "x-connector-job-token",
+                HeaderValue::from_str(job_token).map_err(|e| ApiClientError::Http {
+                    status: 0,
+                    message: e.to_string(),
+                    code: None,
+                })?,
+            );
+        }
 
         Ok(headers)
     }
@@ -140,6 +173,7 @@ impl ConnectorApiClient {
             &AuthHeaders {
                 device_access_token: None,
                 neon_session_token: Some(neon_session_token.to_string()),
+                ..AuthHeaders::default()
             },
         )
         .await
@@ -165,7 +199,7 @@ impl ConnectorApiClient {
             &request,
             &AuthHeaders {
                 device_access_token: Some(device_access_token.to_string()),
-                neon_session_token: None,
+                ..AuthHeaders::default()
             },
         )
         .await
@@ -180,13 +214,80 @@ impl ConnectorApiClient {
             &request,
             &AuthHeaders {
                 device_access_token: Some(device_access_token.to_string()),
-                neon_session_token: None,
+                ..AuthHeaders::default()
             },
         )
         .await
     }
 
-    /// Proposed pairing action — backend not yet deployed.
+    pub async fn create_pairing_session(
+        &self,
+        request: CreatePairingSessionRequest,
+    ) -> Result<CreatePairingSessionResponse, ApiClientError> {
+        self.post(&request, &AuthHeaders::default()).await
+    }
+
+    pub async fn poll_pairing_session(
+        &self,
+        request: PollPairingSessionRequest,
+    ) -> Result<PollPairingSessionResponse, ApiClientError> {
+        self.post(
+            &request,
+            &AuthHeaders {
+                pairing_session_id: Some(request.session_id.clone()),
+                pairing_session_secret: Some(request.session_secret.clone()),
+                ..AuthHeaders::default()
+            },
+        )
+        .await
+    }
+
+    pub async fn claim_job(
+        &self,
+        request: ClaimJobRequest,
+        device_access_token: &str,
+    ) -> Result<ClaimJobResponse, ApiClientError> {
+        self.post(
+            &request,
+            &AuthHeaders {
+                device_access_token: Some(device_access_token.to_string()),
+                ..AuthHeaders::default()
+            },
+        )
+        .await
+    }
+
+    pub async fn update_status(
+        &self,
+        request: UpdateStatusRequest,
+        scoped_job_token: &str,
+    ) -> Result<serde_json::Value, ApiClientError> {
+        self.post(
+            &request,
+            &AuthHeaders {
+                scoped_job_token: Some(scoped_job_token.to_string()),
+                ..AuthHeaders::default()
+            },
+        )
+        .await
+    }
+
+    pub async fn complete_job(
+        &self,
+        request: CompleteJobRequest,
+        scoped_job_token: &str,
+    ) -> Result<serde_json::Value, ApiClientError> {
+        self.post(
+            &request,
+            &AuthHeaders {
+                scoped_job_token: Some(scoped_job_token.to_string()),
+                ..AuthHeaders::default()
+            },
+        )
+        .await
+    }
+
+    /// Legacy stub — prefer pairing session flow.
     pub async fn create_pairing_code(
         &self,
         request: CreatePairingCodeRequest,
@@ -205,6 +306,7 @@ impl ConnectorApiClient {
             &AuthHeaders {
                 device_access_token: None,
                 neon_session_token: Some(neon_session_token.to_string()),
+                ..AuthHeaders::default()
             },
         )
         .await
@@ -216,6 +318,9 @@ impl Default for AuthHeaders {
         Self {
             device_access_token: None,
             neon_session_token: None,
+            pairing_session_id: None,
+            pairing_session_secret: None,
+            scoped_job_token: None,
         }
     }
 }

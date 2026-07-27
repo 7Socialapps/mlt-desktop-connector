@@ -134,6 +134,91 @@ pub struct PollJobsResponse {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct CreatePairingSessionRequest {
+    pub action: String,
+    pub device_id: String,
+    pub connector_version: String,
+    pub os: ConnectorOs,
+    pub capabilities: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub device_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreatePairingSessionResponse {
+    pub ok: bool,
+    pub session_id: Option<String>,
+    pub session_secret: Option<String>,
+    pub pairing_code: Option<String>,
+    pub expires_at: Option<String>,
+    pub error: Option<String>,
+    pub error_code: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PollPairingSessionRequest {
+    pub action: String,
+    pub session_id: String,
+    pub session_secret: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PollPairingSessionResponse {
+    pub ok: bool,
+    pub status: String,
+    pub access_token: Option<String>,
+    pub refresh_token: Option<String>,
+    pub device_id: Option<String>,
+    pub user_id: Option<String>,
+    pub dealership_id: Option<String>,
+    pub error: Option<String>,
+    pub error_code: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClaimJobRequest {
+    pub action: String,
+    pub job_id: String,
+    pub device_id: String,
+    pub user_id: String,
+    pub dealership_id: String,
+    pub connector_version: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClaimJobResponse {
+    pub ok: bool,
+    pub job_id: String,
+    pub scoped_job_token: Option<String>,
+    pub error: Option<String>,
+    pub error_code: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateStatusRequest {
+    pub action: String,
+    pub job_id: String,
+    pub status: String,
+    pub progress: u8,
+    pub current_step: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompleteJobRequest {
+    pub action: String,
+    pub job_id: String,
+    pub listing_url: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CreatePairingCodeRequest {
     pub action: String,
     pub device_id: String,
