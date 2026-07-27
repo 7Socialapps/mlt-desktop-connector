@@ -12,6 +12,16 @@ interface ConnectorStatus {
   last_heartbeat_at: string | null;
   last_error: string | null;
   current_job_id: string | null;
+  deep_link_message: string | null;
+  launch_session_id: string | null;
+  launch_status: string | null;
+}
+
+interface ChromiumProvisionState {
+  active: boolean;
+  progress: number;
+  message: string;
+  error: string | null;
 }
 
 interface PairingState {
@@ -118,6 +128,72 @@ let actionInProgress: string | null = null;
 let diagnosticsReport: ConnectionTestReport | null = null;
 let jobProgress: JobProgressSnapshot | null = null;
 let showValidationPanel = false;
+let chromiumProvision: ChromiumProvisionState = {
+  active: false,
+  progress: 0,
+  message: "Checking browser components…",
+  error: null,
+};
+
+type WelcomeStep =
+  | "checking"
+  | "download_browser"
+  | "pair"
+  | "connect_facebook"
+  | "marketplace"
+  | "ready";
+
+function computeWelcomeStep(
+  status: ConnectorStatus,
+  browser: BrowserManagerSnapshot,
+  runtime: RuntimeStatus,
+): { step: WelcomeStep; title: string; detail: string } {
+  if (chromiumProvision.active || (!browser.chromium_installed && browser.enabled)) {
+    return {
+      step: "download_browser",
+      title: "Setting up your browser",
+      detail: chromiumProvision.message,
+    };
+  }
+  if (status.needs_reconnect) {
+    return {
+      step: "pair",
+      title: "This device needs to be paired again",
+      detail: status.last_error ?? "Your dashboard access was revoked. Pair again to continue.",
+    };
+  }
+  if (!status.paired) {
+    return {
+      step: "pair",
+      title: "Pair with your MLT Dashboard",
+      detail: "Start pairing below, then enter the code in Web Poster → Pair Desktop Connector.",
+    };
+  }
+  const loggedIn =
+    runtime.facebook_session_state === "logged_in" ||
+    browser.facebook_session.state === "facebook_logged_in";
+  if (!loggedIn) {
+    return {
+      step: "connect_facebook",
+      title: "Connect Facebook",
+      detail:
+        status.deep_link_message ??
+        "Sign into Facebook in the browser window. Your password stays on Facebook — never in MLT.",
+    };
+  }
+  if (runtime.marketplace_state !== "ready" && browser.marketplace.status !== "marketplace_ready") {
+    return {
+      step: "marketplace",
+      title: "Open Facebook Marketplace",
+      detail: "Confirm Marketplace loads in the browser before posting from the dashboard.",
+    };
+  }
+  return {
+    step: "ready",
+    title: "You're ready to post",
+    detail: "Keep this app running in the tray while you work in the MLT Dashboard.",
+  };
+}
 
 function labelize(value: string): string {
   return value.replaceAll("_", " ");
@@ -179,12 +255,39 @@ function render(
   const canReconnect = status.needs_reconnect || !status.paired;
   const canCancelOperation = Boolean(actionInProgress);
 
+  const welcome = computeWelcomeStep(status, browser, runtime);
+  const dashboardMessage = status.deep_link_message;
+
   app.innerHTML = `
     <main class="status-window">
       <header>
         <h1>MLT Desktop Connector</h1>
         <span class="badge badge-${status.connection_state}">${labelize(status.connection_state)}</span>
       </header>
+
+      <section class="welcome-section">
+        <h2>Getting started</h2>
+        <p class="welcome-title">${welcome.title}</p>
+        <p class="helper">${welcome.detail}</p>
+        ${
+          chromiumProvision.active
+            ? `<div class="progress-bar" role="progressbar" aria-valuenow="${chromiumProvision.progress}" aria-valuemin="0" aria-valuemax="100">
+                <div class="progress-fill" style="width:${chromiumProvision.progress}%"></div>
+              </div>`
+            : ""
+        }
+        ${
+          chromiumProvision.error
+            ? `<p class="error" role="alert">${chromiumProvision.error}</p>`
+            : ""
+        }
+        ${
+          dashboardMessage
+            ? `<p class="helper dashboard-request" role="status">${dashboardMessage}</p>`
+            : ""
+        }
+      </section>
+
       <dl>
         <div><dt>Version</dt><dd>${status.connector_version}</dd></div>
         <div><dt>Environment</dt><dd>${status.environment}</dd></div>
@@ -244,8 +347,8 @@ function render(
           <div><dt>Last health check</dt><dd>${browser.last_health_check_at ?? "—"}</dd></div>
         </dl>
         ${
-          !browser.chromium_installed && browser.enabled
-            ? `<p class="helper">Run <code>npm run browser:install</code> once to download Chromium. The connector will not download browsers automatically.</p>`
+          !browser.chromium_installed && browser.enabled && !chromiumProvision.active
+            ? `<p class="helper">The connector will download Chromium automatically on first run.</p>`
             : ""
         }
         ${
@@ -511,14 +614,16 @@ async function refreshWith(pairing: PairingState) {
 
 async function refresh() {
   try {
-    const [status, pairing, browser, runtime, progress] = await Promise.all([
+    const [status, pairing, browser, runtime, progress, provision] = await Promise.all([
       invoke<ConnectorStatus>("get_status"),
       invoke<PairingState>("get_pairing_state"),
       invoke<BrowserManagerSnapshot>("get_browser_status"),
       invoke<RuntimeStatus>("runtime_status"),
       invoke<JobProgressSnapshot | null>("get_job_progress"),
+      invoke<ChromiumProvisionState>("get_chromium_provision_state"),
     ]);
     jobProgress = progress;
+    chromiumProvision = provision;
     render(status, pairing, browser, runtime);
   } catch (err) {
     app.innerHTML = `<p class="error">Failed to load status: ${String(err)}</p>`;
@@ -530,6 +635,11 @@ async function main() {
   await listen("connector://status-changed", () => void refresh());
   await listen("connector://pairing-changed", () => void refresh());
   await listen("connector://browser-changed", () => void refresh());
+  await listen("connector://deep-link-changed", () => void refresh());
+  await listen<ChromiumProvisionState>("connector://chromium-provision", (event) => {
+    chromiumProvision = event.payload;
+    void refresh();
+  });
   setInterval(() => void refresh(), 5_000);
 }
 
