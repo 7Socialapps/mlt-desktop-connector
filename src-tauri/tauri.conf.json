@@ -19,6 +19,13 @@
       "iconAsTemplate": true
     }
   },
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": ["mlt-desktop"]
+      }
+    }
+  },
   "bundle": {
     "active": true,
     "targets": "all",
@@ -28,8 +35,13 @@
       "icons/128x128@2x.png",
       "icons/icon.png"
     ],
+    "resources": {
+      "../browser-sidecar/": "browser-sidecar/"
+    },
     "macOS": {
-      "minimumSystemVersion": "10.15"
+      "minimumSystemVersion": "10.15",
+      "signingIdentity": null,
+      "entitlements": null
     }
   }
 }

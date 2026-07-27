@@ -438,6 +438,10 @@ mod tests {
             last_heartbeat_at: None,
             last_error: None,
             current_job_id: None,
+            deep_link_route: None,
+            deep_link_message: None,
+            launch_session_id: None,
+            launch_status: None,
         }
     }
 
@@ -542,6 +546,8 @@ mod tests {
             last_navigation_error: payload.last_navigation_error,
             last_health_check_at: payload.last_health_check_at,
             last_restart_at: payload.last_restart_at,
+            launch_session_id: None,
+            launch_status: None,
         };
         let json = serde_json::to_value(&request).expect("serialize heartbeat");
         assert_eq!(json["facebook_session_state"], "facebook_not_checked");

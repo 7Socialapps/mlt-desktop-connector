@@ -3,7 +3,8 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::{mpsc, OnceLock};
+use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -14,6 +15,16 @@ use serde::Serialize;
 use tracing::{debug, info, warn};
 
 use super::types::{SidecarDaemonLine, SidecarDetectResponse, SidecarSimpleResponse};
+
+static RESOURCE_ROOT: OnceLock<PathBuf> = OnceLock::new();
+
+pub fn set_resource_root(path: PathBuf) {
+    let _ = RESOURCE_ROOT.set(path);
+}
+
+fn bundled_sidecar_path(name: &str) -> Option<PathBuf> {
+    RESOURCE_ROOT.get().map(|root| root.join("browser-sidecar").join(name))
+}
 
 fn browser_test_state_path() -> String {
     if let Ok(dir) = std::env::var("MLT_BROWSER_TEST_STATE_DIR") {
@@ -43,6 +54,12 @@ pub fn resolve_sidecar_cli() -> Result<PathBuf> {
         );
     }
 
+    if let Some(path) = bundled_sidecar_path("cli.mjs") {
+        if path.exists() {
+            return Ok(path);
+        }
+    }
+
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let dev_path = manifest_dir
         .join("..")
@@ -68,6 +85,12 @@ pub fn resolve_sidecar_server() -> Result<PathBuf> {
             "MLT_BROWSER_SIDECAR_SERVER points to missing file: {}",
             path.display()
         );
+    }
+
+    if let Some(path) = bundled_sidecar_path("server.mjs") {
+        if path.exists() {
+            return Ok(path);
+        }
     }
 
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -420,5 +443,18 @@ fn dispatch_sidecar_event(
 
     if let Some(evt) = mapped {
         let _ = event_tx.send(evt);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bundled_path_uses_resource_root_when_set() {
+        let temp = std::env::temp_dir().join("mlt-sidecar-test-root");
+        set_resource_root(temp.clone());
+        let expected = temp.join("browser-sidecar").join("cli.mjs");
+        assert_eq!(bundled_sidecar_path("cli.mjs"), Some(expected));
     }
 }

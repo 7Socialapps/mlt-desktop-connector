@@ -16,9 +16,10 @@ pub use marketplace::{
 };
 pub use profile::{ProfileSnapshot, ProfileStatus};
 pub use runtime::BrowserRuntimeService;
+pub use sidecar::{resolve_sidecar_cli, resolve_sidecar_server, run_sidecar_command, set_resource_root, SidecarDaemon};
 pub use types::{
     BrowserActivePage, BrowserManagerSnapshot, BrowserRuntimeSnapshot, BrowserRuntimeStatus,
-    SidecarDaemonLine,
+    SidecarDaemonLine, SidecarSimpleResponse,
 };
 
 use std::sync::{Arc, OnceLock};
@@ -58,5 +59,3 @@ pub fn is_browser_enabled() -> bool {
         .map(|v| matches!(v.to_lowercase().as_str(), "1" | "true" | "yes"))
         .unwrap_or(true)
 }
-
-pub use sidecar::SidecarDaemon;
