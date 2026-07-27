@@ -39,14 +39,14 @@ impl ChromiumProvisionService {
     }
 
     pub fn start_if_needed(self: &Arc<Self>, app: AppHandle) {
-        let _ = self.runtime.detect();
-        let snap = self.runtime.snapshot();
-        if snap.chromium_installed || !snap.enabled {
-            return;
-        }
-
+        let runtime = self.runtime.clone();
         let svc = self.clone();
         tauri::async_runtime::spawn(async move {
+            let _ = runtime.detect();
+            let snap = runtime.snapshot();
+            if snap.chromium_installed || !snap.enabled {
+                return;
+            }
             svc.run_install(app).await;
         });
     }

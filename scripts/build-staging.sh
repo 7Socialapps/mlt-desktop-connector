@@ -11,6 +11,7 @@ fi
 set +a
 
 export MLT_ENV="${MLT_ENV:-staging}"
+export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT/src-tauri/target}"
 
 echo "Building MLT Desktop Connector (staging) with MLT_ENV=${MLT_ENV}"
 npm run build

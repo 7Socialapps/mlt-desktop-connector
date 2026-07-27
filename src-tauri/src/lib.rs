@@ -43,7 +43,10 @@ use runtime::FacebookRuntime;
 use runtime::DiagnosticsSnapshot;
 
 use launch_session::{LaunchSessionService, LaunchSessionStore};
-use protocol::extract_deep_link_from_argv;
+use protocol::{
+    enqueue_startup_deep_links, extract_deep_link_from_argv, listen_for_deep_links,
+    register_deep_links_if_supported,
+};
 use state::{AppState, ConnectionState};
 
 struct PendingDeepLinks(Mutex<Vec<String>>);
@@ -319,11 +322,15 @@ fn open_path_in_file_manager(path: &std::path::Path) -> Result<(), String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    logging::install_panic_hook();
+
     let config = match AppConfig::from_env() {
         Ok(c) => c,
         Err(err) => {
             eprintln!("Configuration error: {err}");
-            eprintln!("Set MLT_ENV=staging and staging Supabase URL/anon key before launching.");
+            eprintln!(
+                "This build is missing embedded staging configuration. Reinstall from a valid staging package."
+            );
             std::process::exit(1);
         }
     };
@@ -459,31 +466,9 @@ pub fn run() {
 
             app.manage(PendingDeepLinks(Mutex::new(Vec::new())));
 
-            if let Some(url) = extract_deep_link_from_argv(
-                &std::env::args().collect::<Vec<_>>(),
-            ) {
-                deep_link.enqueue(url);
-            }
-
-            #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
-            {
-                use tauri_plugin_deep_link::DeepLinkExt;
-                app.deep_link().register_all()?;
-                let deep_link_listener = deep_link.clone();
-                let app_handle = app.handle().clone();
-                app.listen("deep-link://new-url", move |event| {
-                    if let Ok(urls) = serde_json::from_str::<Vec<String>>(event.payload()) {
-                        for url in urls {
-                            deep_link_listener.enqueue(url);
-                        }
-                        deep_link_listener.drain_pending();
-                    } else if let Some(url) = event.payload().strip_prefix('"').and_then(|s| s.strip_suffix('"')) {
-                        deep_link_listener.enqueue(url.to_string());
-                        deep_link_listener.drain_pending();
-                    }
-                    let _ = app_handle;
-                });
-            }
+            register_deep_links_if_supported(app.handle());
+            enqueue_startup_deep_links(app.handle(), &deep_link);
+            listen_for_deep_links(app.handle(), deep_link.clone());
 
             {
                 let mut guard = state.lock();
