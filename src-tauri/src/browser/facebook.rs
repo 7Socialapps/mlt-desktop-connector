@@ -94,15 +94,20 @@ pub struct SidecarFacebookDetection {
 
 pub fn parse_facebook_state(raw: &str) -> FacebookSessionState {
     match raw {
-        "facebook_logged_out" => FacebookSessionState::FacebookLoggedOut,
+        "logged_in" | "facebook_logged_in" => FacebookSessionState::FacebookLoggedIn,
+        "logged_out" | "facebook_logged_out" => FacebookSessionState::FacebookLoggedOut,
         "facebook_login_in_progress" => FacebookSessionState::FacebookLoginInProgress,
-        "facebook_logged_in" => FacebookSessionState::FacebookLoggedIn,
-        "facebook_checkpoint" => FacebookSessionState::FacebookCheckpoint,
-        "facebook_mfa_required" => FacebookSessionState::FacebookMfaRequired,
-        "facebook_session_expired" => FacebookSessionState::FacebookSessionExpired,
-        "facebook_temporary_restriction" => FacebookSessionState::FacebookTemporaryRestriction,
-        "facebook_disabled_account" => FacebookSessionState::FacebookDisabledAccount,
-        "facebook_error" => FacebookSessionState::FacebookError,
+        "checkpoint" | "facebook_checkpoint" => FacebookSessionState::FacebookCheckpoint,
+        "mfa_required" | "facebook_mfa_required" => FacebookSessionState::FacebookMfaRequired,
+        "session_expired" | "facebook_session_expired" => FacebookSessionState::FacebookSessionExpired,
+        "account_restricted" | "facebook_temporary_restriction" => {
+            FacebookSessionState::FacebookTemporaryRestriction
+        }
+        "account_disabled" | "facebook_disabled_account" => {
+            FacebookSessionState::FacebookDisabledAccount
+        }
+        "unknown" | "facebook_error" => FacebookSessionState::FacebookError,
+        "facebook_not_checked" => FacebookSessionState::FacebookNotChecked,
         _ => FacebookSessionState::FacebookNotChecked,
     }
 }

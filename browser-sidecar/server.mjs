@@ -440,6 +440,7 @@ async function handleNavigate(id, params = {}) {
       attempt: nav.attempt,
       current_url: nav.current_url,
       page_title: readiness.title,
+      redirect_detected: nav.redirect_detected,
       facebook: fb ?? lastFacebookDetection,
     });
   } catch (err) {

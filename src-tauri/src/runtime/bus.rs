@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -36,6 +37,9 @@ pub struct ServiceBus {
     browser_manager: Arc<BrowserManager>,
     access_lock: Mutex<()>,
     current_service: Mutex<Option<RuntimeServiceKind>>,
+    cancel_requested: Arc<AtomicBool>,
+    last_navigation_error: Mutex<Option<String>>,
+    last_destination: Mutex<Option<String>>,
 }
 
 impl ServiceBus {
@@ -44,6 +48,47 @@ impl ServiceBus {
             browser_manager,
             access_lock: Mutex::new(()),
             current_service: Mutex::new(None),
+            cancel_requested: Arc::new(AtomicBool::new(false)),
+            last_navigation_error: Mutex::new(None),
+            last_destination: Mutex::new(None),
+        }
+    }
+
+    pub fn request_cancel(&self) {
+        self.cancel_requested.store(true, Ordering::SeqCst);
+    }
+
+    pub fn clear_cancel(&self) {
+        self.cancel_requested.store(false, Ordering::SeqCst);
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.cancel_requested.load(Ordering::SeqCst)
+    }
+
+    pub fn record_navigation_success(&self, destination: &str) {
+        *self.last_destination.lock() = Some(destination.to_string());
+        *self.last_navigation_error.lock() = None;
+    }
+
+    pub fn record_navigation_error(&self, destination: &str, error: &str) {
+        *self.last_destination.lock() = Some(destination.to_string());
+        *self.last_navigation_error.lock() = Some(truncate_error(error));
+    }
+
+    pub fn last_navigation_error(&self) -> Option<String> {
+        self.last_navigation_error.lock().clone()
+    }
+
+    pub fn last_destination(&self) -> Option<String> {
+        self.last_destination.lock().clone()
+    }
+
+    fn check_cancel(&self) -> Result<(), String> {
+        if self.is_cancelled() {
+            Err("Runtime operation cancelled".into())
+        } else {
+            Ok(())
         }
     }
 
@@ -72,11 +117,14 @@ impl ServiceBus {
     where
         F: FnOnce(&Arc<BrowserManager>) -> Result<T, String>,
     {
+        self.check_cancel()?;
         let _guard = self.access_lock.lock();
+        self.check_cancel()?;
         self.set_current_service(kind);
-        debug!(service = kind.as_str(), "service bus acquired browser lock");
+        debug!(service = kind.as_str(), "runtime coordinator acquired browser lock");
         let result = f(&self.browser_manager);
         self.clear_current_service();
+        self.clear_cancel();
         result
     }
 
@@ -103,6 +151,15 @@ impl ServiceBus {
 
     pub fn record_restart(&self) {
         self.browser_manager.touch_restart();
+    }
+}
+
+fn truncate_error(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.len() > 240 {
+        format!("{}…", &trimmed[..240])
+    } else {
+        trimmed.to_string()
     }
 }
 
@@ -158,5 +215,24 @@ mod tests {
     fn service_kind_serializes_snake_case() {
         let json = serde_json::to_value(RuntimeServiceKind::Marketplace).unwrap();
         assert_eq!(json, "marketplace");
+    }
+
+    #[test]
+    fn cancellation_aborts_before_service_acquires_lock() {
+        let bus = test_bus();
+        bus.request_cancel();
+        let result = bus.with_service(RuntimeServiceKind::Navigation, |_| Ok(()));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("cancelled"));
+    }
+
+    #[test]
+    fn navigation_error_and_success_tracking() {
+        let bus = test_bus();
+        bus.record_navigation_error("messenger", "timeout");
+        assert_eq!(bus.last_navigation_error().as_deref(), Some("timeout"));
+        bus.record_navigation_success("messenger");
+        assert!(bus.last_navigation_error().is_none());
+        assert_eq!(bus.last_destination().as_deref(), Some("messenger"));
     }
 }

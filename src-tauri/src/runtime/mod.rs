@@ -1,4 +1,5 @@
 pub mod bus;
+pub mod diagnostics;
 pub mod marketplace;
 pub mod messenger;
 pub mod navigation;
@@ -8,12 +9,13 @@ pub mod session;
 pub mod status;
 
 pub use bus::{RuntimeServiceKind, ServiceBus};
+pub use diagnostics::{DiagnosticsService, DiagnosticsSnapshot};
 pub use marketplace::MarketplaceService;
 pub use messenger::{MessengerService, MessengerState};
 pub use navigation::{NavigationDestination, NavigationService};
 pub use notifications::{NotificationService, NotificationState};
 pub use recovery::{RecoveryAction, RecoveryOutcome, RecoveryService};
-pub use session::FacebookSessionService;
+pub use session::{canonical_session_state, FacebookSessionService};
 pub use status::FacebookRuntimeStatus;
 
 #[cfg(test)]
@@ -34,6 +36,7 @@ pub struct FacebookRuntime {
     pub messenger: Arc<MessengerService>,
     pub notifications: Arc<NotificationService>,
     pub recovery: Arc<RecoveryService>,
+    pub diagnostics: Arc<DiagnosticsService>,
     last_status: Arc<Mutex<FacebookRuntimeStatus>>,
 }
 
@@ -54,6 +57,7 @@ impl FacebookRuntime {
             session.clone(),
             navigation.clone(),
         ));
+        let diagnostics = Arc::new(DiagnosticsService::new(bus.clone(), session.clone()));
 
         let runtime = Arc::new(Self {
             bus: bus.clone(),
@@ -63,6 +67,7 @@ impl FacebookRuntime {
             messenger,
             notifications,
             recovery,
+            diagnostics,
             last_status: Arc::new(Mutex::new(FacebookRuntimeStatus::default())),
         });
 
@@ -70,12 +75,14 @@ impl FacebookRuntime {
     }
 
     pub fn aggregate_status(&self) -> FacebookRuntimeStatus {
+        let diag = self.diagnostics.snapshot();
         let status = FacebookRuntimeStatus::aggregate(
             &self.bus,
             &self.session,
             &self.marketplace,
             &self.messenger,
             &self.notifications,
+            &diag,
         );
         *self.last_status.lock() = status.clone();
         status

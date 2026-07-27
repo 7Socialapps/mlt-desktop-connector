@@ -13,6 +13,37 @@ export const DESTINATIONS = {
 };
 
 /**
+ * Detect unexpected redirects (login, checkpoint, wrong section).
+ * @param {string} targetUrl
+ * @param {string} currentUrl
+ */
+export function detectRedirect(targetUrl, currentUrl) {
+  if (!targetUrl || !currentUrl) return false;
+  try {
+    const target = new URL(targetUrl);
+    const current = new URL(currentUrl);
+    if (current.pathname.includes("/login") || current.pathname.includes("/checkpoint")) {
+      return true;
+    }
+    if (target.pathname.startsWith("/marketplace") && !current.pathname.startsWith("/marketplace")) {
+      return true;
+    }
+    if (target.pathname.startsWith("/messages") && !current.pathname.startsWith("/messages")) {
+      return true;
+    }
+    if (
+      target.pathname.startsWith("/notifications") &&
+      !current.pathname.startsWith("/notifications")
+    ) {
+      return true;
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * @param {NavigationDestination | string} destination
  * @returns {string | null}
  */
@@ -20,12 +51,13 @@ export function destinationUrl(destination) {
   return DESTINATIONS[destination] ?? null;
 }
 
+
 /**
  * @param {import("playwright").Page} page
  * @param {string} targetUrl
  * @param {number} [maxAttempts]
  * @param {number} [timeoutMs]
- * @returns {Promise<{ ok: true, attempt: number, current_url: string }>}
+ * @returns {Promise<{ ok: true, attempt: number, current_url: string, redirect_detected: boolean }>}
  */
 export async function navigateWithRetry(page, targetUrl, maxAttempts = 2, timeoutMs = 45_000) {
   let lastError = null;
@@ -36,7 +68,13 @@ export async function navigateWithRetry(page, targetUrl, maxAttempts = 2, timeou
         timeout: timeoutMs,
       });
       await page.waitForTimeout(2000);
-      return { ok: true, attempt, current_url: page.url() };
+      const current_url = page.url();
+      return {
+        ok: true,
+        attempt,
+        current_url,
+        redirect_detected: detectRedirect(targetUrl, current_url),
+      };
     } catch (err) {
       lastError = err;
       if (attempt < maxAttempts) {

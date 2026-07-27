@@ -5,6 +5,7 @@ use crate::browser::{BrowserRuntimeStatus, BrowserManagerSnapshot};
 use crate::version::CONNECTOR_VERSION;
 
 use super::bus::ServiceBus;
+use super::diagnostics::DiagnosticsSnapshot;
 use super::marketplace::MarketplaceService;
 use super::messenger::MessengerService;
 use super::notifications::NotificationService;
@@ -26,6 +27,17 @@ pub struct FacebookRuntimeStatus {
     pub current_service: Option<String>,
     pub last_health_check: Option<String>,
     pub last_restart: Option<String>,
+    /// M4 contract — dashboard-friendly service states.
+    pub browser_state: String,
+    pub facebook_session_state: String,
+    pub facebook_account_label: Option<String>,
+    pub marketplace_state: String,
+    pub messenger_state: String,
+    pub notifications_state: String,
+    pub current_destination: Option<String>,
+    pub last_navigation_error: Option<String>,
+    pub last_health_check_at: Option<String>,
+    pub last_restart_at: Option<String>,
 }
 
 impl Default for FacebookRuntimeStatus {
@@ -33,7 +45,7 @@ impl Default for FacebookRuntimeStatus {
         Self {
             current_browser: BrowserRuntimeStatus::BrowserStopped,
             current_facebook_account: None,
-            session_state: "facebook_not_checked".into(),
+            session_state: "unknown".into(),
             marketplace_ready: false,
             messenger_ready: false,
             notifications_ready: false,
@@ -44,6 +56,16 @@ impl Default for FacebookRuntimeStatus {
             current_service: None,
             last_health_check: None,
             last_restart: None,
+            browser_state: "browser_stopped".into(),
+            facebook_session_state: "unknown".into(),
+            facebook_account_label: None,
+            marketplace_state: "marketplace_not_checked".into(),
+            messenger_state: "messenger_not_checked".into(),
+            notifications_state: "notifications_not_checked".into(),
+            current_destination: None,
+            last_navigation_error: None,
+            last_health_check_at: None,
+            last_restart_at: None,
         }
     }
 }
@@ -67,17 +89,47 @@ impl FacebookRuntimeStatus {
         marketplace: &MarketplaceService,
         messenger: &MessengerService,
         notifications: &NotificationService,
+        diagnostics: &DiagnosticsSnapshot,
     ) -> Self {
         let browser = bus.browser_manager().snapshot();
         let session_snap = session.snapshot();
+        let marketplace_snap = marketplace.snapshot();
+        let messenger_snap = messenger.snapshot();
+        let notifications_snap = notifications.snapshot();
+
+        let browser_state = serde_json::to_value(browser.status)
+            .ok()
+            .and_then(|v| v.as_str().map(String::from))
+            .unwrap_or_else(|| "unknown".into());
+
+        let marketplace_state = serde_json::to_value(marketplace_snap.status)
+            .ok()
+            .and_then(|v| v.as_str().map(String::from))
+            .unwrap_or_else(|| "marketplace_not_checked".into());
+
+        let messenger_state = serde_json::to_value(messenger_snap.state)
+            .ok()
+            .and_then(|v| v.as_str().map(String::from))
+            .unwrap_or_else(|| "messenger_not_checked".into());
+
+        let notifications_state = serde_json::to_value(notifications_snap.state)
+            .ok()
+            .and_then(|v| v.as_str().map(String::from))
+            .unwrap_or_else(|| "notifications_not_checked".into());
+
         Self::from_browser_and_services(
             &browser,
-            &session_snap.state_label(),
+            &session_snap.canonical_state(),
             session_snap.display_name.clone(),
             marketplace.is_ready(),
             messenger.is_ready(),
             notifications.is_ready(),
             bus.current_service_name(),
+            diagnostics,
+            browser_state,
+            marketplace_state,
+            messenger_state,
+            notifications_state,
         )
     }
 
@@ -89,10 +141,15 @@ impl FacebookRuntimeStatus {
         messenger_ready: bool,
         notifications_ready: bool,
         current_service: Option<String>,
+        diagnostics: &DiagnosticsSnapshot,
+        browser_state: String,
+        marketplace_state: String,
+        messenger_state: String,
+        notifications_state: String,
     ) -> Self {
         Self {
             current_browser: browser.status,
-            current_facebook_account: account,
+            current_facebook_account: account.clone(),
             session_state: session_state.to_string(),
             marketplace_ready,
             messenger_ready,
@@ -104,6 +161,16 @@ impl FacebookRuntimeStatus {
             current_service,
             last_health_check: browser.last_health_check_at.clone(),
             last_restart: browser.last_restart_at.clone(),
+            browser_state,
+            facebook_session_state: session_state.to_string(),
+            facebook_account_label: account,
+            marketplace_state,
+            messenger_state,
+            notifications_state,
+            current_destination: diagnostics.current_destination.clone(),
+            last_navigation_error: diagnostics.last_navigation_error.clone(),
+            last_health_check_at: diagnostics.last_health_check_at.clone(),
+            last_restart_at: diagnostics.last_restart_at.clone(),
         }
     }
 }
@@ -115,6 +182,7 @@ mod tests {
         BrowserManagerSnapshot, BrowserRuntimeSnapshot, BrowserRuntimeStatus,
         FacebookSessionSnapshot, FacebookSessionState,
     };
+    use super::super::diagnostics::DiagnosticsSnapshot;
 
     fn sample_browser() -> BrowserManagerSnapshot {
         BrowserManagerSnapshot::from_runtime(&BrowserRuntimeSnapshot {
@@ -147,12 +215,29 @@ mod tests {
 
         let status = FacebookRuntimeStatus::from_browser_and_services(
             &browser,
-            "facebook_logged_in",
+            "logged_in",
             Some("Dealer Name".into()),
             true,
             false,
             false,
             Some("marketplace".into()),
+            &DiagnosticsSnapshot {
+                browser_health: "browser_ready".into(),
+                session_health: "logged_in".into(),
+                current_destination: Some("facebook_marketplace".into()),
+                current_service: Some("marketplace".into()),
+                browser_version: Some("1.52.0".into()),
+                connector_version: CONNECTOR_VERSION.to_string(),
+                browser_pid: Some(1234),
+                profile_version: "abc".into(),
+                last_health_check_at: None,
+                last_restart_at: None,
+                last_navigation_error: None,
+            },
+            "browser_ready".into(),
+            "marketplace_ready".into(),
+            "messenger_not_checked".into(),
+            "notifications_not_checked".into(),
         );
 
         assert_eq!(status.current_browser, BrowserRuntimeStatus::BrowserReady);
@@ -160,7 +245,9 @@ mod tests {
             status.current_facebook_account.as_deref(),
             Some("Dealer Name")
         );
-        assert_eq!(status.session_state, "facebook_logged_in");
+        assert_eq!(status.session_state, "logged_in");
+        assert_eq!(status.facebook_session_state, "logged_in");
+        assert_eq!(status.facebook_account_label.as_deref(), Some("Dealer Name"));
         assert!(status.marketplace_ready);
         assert!(!status.messenger_ready);
         assert_eq!(status.browser_pid, Some(1234));
@@ -179,6 +266,6 @@ mod tests {
         let status = FacebookRuntimeStatus::default();
         assert!(!status.marketplace_ready);
         assert!(!status.messenger_ready);
-        assert_eq!(status.session_state, "facebook_not_checked");
+        assert_eq!(status.session_state, "unknown");
     }
 }

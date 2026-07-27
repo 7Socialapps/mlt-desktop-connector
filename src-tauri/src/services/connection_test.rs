@@ -119,6 +119,15 @@ pub fn build_heartbeat_browser_fields(
         current_service: runtime_status.current_service,
         last_health_check: runtime_status.last_health_check,
         last_restart: runtime_status.last_restart,
+        browser_state: Some(runtime_status.browser_state),
+        facebook_account_label: runtime_status.facebook_account_label,
+        marketplace_state: Some(runtime_status.marketplace_state),
+        messenger_state: Some(runtime_status.messenger_state),
+        notifications_state: Some(runtime_status.notifications_state),
+        current_destination: runtime_status.current_destination,
+        last_navigation_error: runtime_status.last_navigation_error,
+        last_health_check_at: runtime_status.last_health_check_at,
+        last_restart_at: runtime_status.last_restart_at,
     }
 }
 
@@ -144,6 +153,15 @@ pub struct HeartbeatBrowserPayload {
     pub current_service: Option<String>,
     pub last_health_check: Option<String>,
     pub last_restart: Option<String>,
+    pub browser_state: Option<String>,
+    pub facebook_account_label: Option<String>,
+    pub marketplace_state: Option<String>,
+    pub messenger_state: Option<String>,
+    pub notifications_state: Option<String>,
+    pub current_destination: Option<String>,
+    pub last_navigation_error: Option<String>,
+    pub last_health_check_at: Option<String>,
+    pub last_restart_at: Option<String>,
 }
 
 pub async fn run_connection_tests(
@@ -515,6 +533,15 @@ mod tests {
             current_service: payload.current_service,
             last_health_check: payload.last_health_check,
             last_restart: payload.last_restart,
+            browser_state: payload.browser_state,
+            facebook_account_label: payload.facebook_account_label,
+            marketplace_state: payload.marketplace_state,
+            messenger_state: payload.messenger_state,
+            notifications_state: payload.notifications_state,
+            current_destination: payload.current_destination,
+            last_navigation_error: payload.last_navigation_error,
+            last_health_check_at: payload.last_health_check_at,
+            last_restart_at: payload.last_restart_at,
         };
         let json = serde_json::to_value(&request).expect("serialize heartbeat");
         assert_eq!(json["facebook_session_state"], "facebook_not_checked");

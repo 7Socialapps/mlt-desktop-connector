@@ -209,6 +209,15 @@ async fn send_heartbeat(
         current_service: browser_fields.current_service,
         last_health_check: browser_fields.last_health_check,
         last_restart: browser_fields.last_restart,
+        browser_state: browser_fields.browser_state,
+        facebook_account_label: browser_fields.facebook_account_label,
+        marketplace_state: browser_fields.marketplace_state,
+        messenger_state: browser_fields.messenger_state,
+        notifications_state: browser_fields.notifications_state,
+        current_destination: browser_fields.current_destination,
+        last_navigation_error: browser_fields.last_navigation_error,
+        last_health_check_at: browser_fields.last_health_check_at,
+        last_restart_at: browser_fields.last_restart_at,
     };
 
     let response = client

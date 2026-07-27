@@ -77,12 +77,31 @@ impl NavigationService {
     pub fn navigate(&self, destination: NavigationDestination) -> Result<NavigationResult, String> {
         self.bus.ensure_browser_ready(RuntimeServiceKind::Navigation)?;
 
+        let dest_key = destination.sidecar_key();
         let line = self.bus.sidecar_request(
             RuntimeServiceKind::Navigation,
             "navigate",
-            serde_json::json!({ "destination": destination.sidecar_key() }),
+            serde_json::json!({ "destination": dest_key }),
             NAVIGATION_RPC_TIMEOUT,
-        )?;
+        );
+
+        match &line {
+            Ok(response) if response.ok != Some(false) => {
+                self.bus.record_navigation_success(dest_key);
+            }
+            Ok(response) => {
+                let msg = response
+                    .error
+                    .clone()
+                    .unwrap_or_else(|| "Navigation failed".into());
+                self.bus.record_navigation_error(dest_key, &msg);
+            }
+            Err(err) => {
+                self.bus.record_navigation_error(dest_key, err);
+            }
+        }
+
+        let line = line?;
 
         if line.ok == Some(false) {
             return Err(line
@@ -103,9 +122,20 @@ impl NavigationService {
             .get("attempt")
             .and_then(|v| v.as_u64())
             .map(|n| n as u32);
+        let redirect_detected = result
+            .get("redirect_detected")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        if redirect_detected {
+            self.bus.record_navigation_error(
+                dest_key,
+                "Redirect detected — destination may require user attention",
+            );
+        }
 
         Ok(NavigationResult {
-            destination: destination.sidecar_key().into(),
+            destination: dest_key.into(),
             current_url: current_url.clone(),
             page_title,
             attempt,
@@ -113,7 +143,8 @@ impl NavigationService {
             ready: current_url
                 .as_deref()
                 .map(|url| url.starts_with("https://www.facebook.com"))
-                .unwrap_or(false),
+                .unwrap_or(false)
+                && !redirect_detected,
         })
     }
 

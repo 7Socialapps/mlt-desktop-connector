@@ -44,6 +44,28 @@ impl SessionSnapshot {
             .and_then(|v| v.as_str().map(String::from))
             .unwrap_or_else(|| "facebook_not_checked".into())
     }
+
+    /// Dashboard-friendly session label (M4 contract).
+    pub fn canonical_state(&self) -> String {
+        canonical_session_state(&self.state)
+    }
+}
+
+/// Maps internal Facebook session enums to the M4 dashboard contract vocabulary.
+pub fn canonical_session_state(state: &FacebookSessionState) -> String {
+    match state {
+        FacebookSessionState::FacebookLoggedIn => "logged_in".into(),
+        FacebookSessionState::FacebookLoggedOut => "logged_out".into(),
+        FacebookSessionState::FacebookCheckpoint => "checkpoint".into(),
+        FacebookSessionState::FacebookMfaRequired => "mfa_required".into(),
+        FacebookSessionState::FacebookTemporaryRestriction => "account_restricted".into(),
+        FacebookSessionState::FacebookDisabledAccount => "account_disabled".into(),
+        FacebookSessionState::FacebookSessionExpired => "session_expired".into(),
+        FacebookSessionState::FacebookLoginInProgress => "logged_out".into(),
+        FacebookSessionState::FacebookNotChecked | FacebookSessionState::FacebookError => {
+            "unknown".into()
+        }
+    }
 }
 
 pub struct FacebookSessionService {
@@ -191,6 +213,22 @@ mod tests {
         let snap = svc.snapshot();
         assert_eq!(snap.state, FacebookSessionState::FacebookLoggedIn);
         assert_eq!(snap.display_name.as_deref(), Some("Test Dealer"));
+    }
+
+    #[test]
+    fn canonical_state_maps_restricted_and_disabled() {
+        assert_eq!(
+            canonical_session_state(&FacebookSessionState::FacebookTemporaryRestriction),
+            "account_restricted"
+        );
+        assert_eq!(
+            canonical_session_state(&FacebookSessionState::FacebookDisabledAccount),
+            "account_disabled"
+        );
+        assert_eq!(
+            canonical_session_state(&FacebookSessionState::FacebookNotChecked),
+            "unknown"
+        );
     }
 
     #[test]

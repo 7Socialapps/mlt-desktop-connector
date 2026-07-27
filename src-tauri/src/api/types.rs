@@ -170,6 +170,24 @@ pub struct HeartbeatRequest {
     pub last_health_check: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_restart: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub browser_state: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub facebook_account_label: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub marketplace_state: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub messenger_state: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notifications_state: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current_destination: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_navigation_error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_health_check_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_restart_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
