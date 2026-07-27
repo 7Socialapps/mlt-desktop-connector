@@ -135,8 +135,17 @@ async fn poll_and_process(
     );
 
     busy.store(true, Ordering::SeqCst);
+    {
+        let mut guard = state.lock();
+        guard.current_job_id = Some(job.id.clone());
+        guard.connection_state = ConnectionState::Connected;
+    }
     let result = process_job(client, &creds, &device_id, &job.id).await;
     busy.store(false, Ordering::SeqCst);
+    {
+        let mut guard = state.lock();
+        guard.current_job_id = None;
+    }
     result
 }
 

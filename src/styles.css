@@ -190,3 +190,45 @@ footer p {
   background: #3d1a1a;
   color: #ff9d9d;
 }
+
+.progress {
+  color: #ffd27d;
+  font-weight: 500;
+}
+
+.remediation {
+  border-left: 3px solid #3a4a5c;
+  padding-left: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.diagnostics {
+  margin-top: 0.75rem;
+  font-size: 0.8rem;
+}
+
+.diagnostics h3 {
+  margin: 0 0 0.35rem;
+  font-size: 0.85rem;
+}
+
+.diagnostics ul {
+  margin: 0;
+  padding-left: 1.1rem;
+}
+
+.check-pass {
+  color: #7dffb2;
+}
+
+.check-warn {
+  color: #ffd27d;
+}
+
+.check-fail {
+  color: #ff9d9d;
+}
+
+#reset-profile {
+  border-color: #5c3a3a;
+}

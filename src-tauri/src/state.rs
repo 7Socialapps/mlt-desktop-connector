@@ -23,6 +23,7 @@ pub struct StatusSnapshot {
     pub connection_state: ConnectionState,
     pub last_heartbeat_at: Option<String>,
     pub last_error: Option<String>,
+    pub current_job_id: Option<String>,
 }
 
 pub struct AppState {
@@ -33,6 +34,7 @@ pub struct AppState {
     pub connection_state: ConnectionState,
     pub last_heartbeat_at: Option<String>,
     pub last_error: Option<String>,
+    pub current_job_id: Option<String>,
 }
 
 impl AppState {
@@ -46,6 +48,7 @@ impl AppState {
             connection_state: self.connection_state,
             last_heartbeat_at: self.last_heartbeat_at.clone(),
             last_error: self.last_error.clone(),
+            current_job_id: self.current_job_id.clone(),
         }
     }
 }

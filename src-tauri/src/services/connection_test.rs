@@ -388,6 +388,7 @@ mod tests {
             connection_state: ConnectionState::Connected,
             last_heartbeat_at: None,
             last_error: None,
+            current_job_id: None,
         };
         let browser = BrowserManagerSnapshot::from_runtime(&BrowserRuntimeSnapshot {
                 status: BrowserRuntimeStatus::BrowserReady,

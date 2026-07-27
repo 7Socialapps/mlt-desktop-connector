@@ -27,9 +27,10 @@ use lifecycle::{
     ShutdownCoordinator,
 };
 use services::{
-    enable_polling_if_authenticated, run_connection_tests, ConnectionTestReport,
-    HeartbeatService, PairingCoordinator, PairingUiState, PollingService,
+    enable_polling_if_authenticated, run_connection_tests, BrowserHealthService,
+    ConnectionTestReport, HeartbeatService, PairingCoordinator, PairingUiState, PollingService,
 };
+use services::reconnect::ReconnectService;
 use browser::{
     BrowserActivePage, BrowserManagerSnapshot, BrowserRuntimeService, BrowserRuntimeSnapshot,
 };
@@ -40,6 +41,7 @@ struct AppServices {
     shutdown: Arc<ShutdownCoordinator>,
     state: Arc<Mutex<AppState>>,
     api_client: Arc<ConnectorApiClient>,
+    heartbeat: Arc<HeartbeatService>,
     pairing: Arc<PairingCoordinator>,
     polling: Arc<PollingService>,
     browser_runtime: Arc<BrowserRuntimeService>,
@@ -190,6 +192,61 @@ async fn run_connection_tests_cmd(
     )
 }
 
+#[tauri::command]
+fn open_log_folder(app: tauri::AppHandle) -> Result<(), String> {
+    let dir = logging::log_directory(&app).map_err(|e| e.to_string())?;
+    open_path_in_file_manager(&dir)
+}
+
+#[tauri::command]
+async fn reconnect_device(services: tauri::State<'_, AppServices>) -> Result<state::StatusSnapshot, String> {
+    let refreshed = ReconnectService::try_refresh_tokens(services.api_client.as_ref()).await;
+    services.heartbeat.trigger_now();
+    if refreshed {
+        let mut guard = services.state.lock();
+        guard.needs_reconnect = false;
+        guard.last_error = None;
+        if guard.paired {
+            guard.connection_state = ConnectionState::Idle;
+        }
+    } else {
+        let mut guard = services.state.lock();
+        guard.needs_reconnect = true;
+        guard.connection_state = ConnectionState::Offline;
+        if guard.last_error.is_none() {
+            guard.last_error = Some(
+                "Reconnect failed — start pairing again from the dashboard.".into(),
+            );
+        }
+    }
+    Ok(services.state.lock().status_snapshot())
+}
+
+fn open_path_in_file_manager(path: &std::path::Path) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(path)
+            .spawn()
+            .map_err(|e| format!("failed to open log folder: {e}"))?;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(path)
+            .spawn()
+            .map_err(|e| format!("failed to open log folder: {e}"))?;
+    }
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("explorer")
+            .arg(path)
+            .spawn()
+            .map_err(|e| format!("failed to open log folder: {e}"))?;
+    }
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let config = match AppConfig::from_env() {
@@ -228,6 +285,7 @@ pub fn run() {
                 connection_state: ConnectionState::Starting,
                 last_heartbeat_at: None,
                 last_error: initial_error.clone(),
+                current_job_id: None,
             }));
 
             mark_instance_ready(&state);
@@ -328,12 +386,16 @@ pub fn run() {
                 );
             });
 
+            let browser_health =
+                BrowserHealthService::spawn(browser_manager.clone());
+
             let shutdown = Arc::new(ShutdownCoordinator::new(
                 heartbeat.clone(),
                 polling.clone(),
+                browser_health,
                 browser_manager.clone(),
             ));
-            spawn_sleep_resume_monitor(app.handle().clone(), state.clone(), heartbeat);
+            spawn_sleep_resume_monitor(app.handle().clone(), state.clone(), heartbeat.clone());
 
             build_tray(app.handle(), shutdown.clone(), state.clone())?;
             build_main_window(app.handle())?;
@@ -342,6 +404,7 @@ pub fn run() {
                 shutdown,
                 state: state.clone(),
                 api_client: api_client.clone(),
+                heartbeat,
                 pairing,
                 polling,
                 browser_runtime,
@@ -378,7 +441,9 @@ pub fn run() {
             browser_detect_facebook_session,
             browser_reset_profile,
             browser_profile_status,
-            run_connection_tests_cmd
+            run_connection_tests_cmd,
+            open_log_folder,
+            reconnect_device
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
