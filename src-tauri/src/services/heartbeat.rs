@@ -216,3 +216,30 @@ fn sanitize_error(message: &str) -> String {
 fn emit_status(app: &AppHandle, state: &Arc<Mutex<AppState>>) {
     let _ = app.emit("connector://status-changed", state.lock().status_snapshot());
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sanitize_error_redacts_bearer_tokens() {
+        assert_eq!(
+            sanitize_error("Request failed: Bearer secret-token-value"),
+            "Connection error — retrying"
+        );
+    }
+
+    #[test]
+    fn sanitize_error_redacts_overlong_messages() {
+        let long = "x".repeat(301);
+        assert_eq!(sanitize_error(&long), "Connection error — retrying");
+    }
+
+    #[test]
+    fn sanitize_error_preserves_short_safe_messages() {
+        assert_eq!(
+            sanitize_error("Network unreachable"),
+            "Network unreachable"
+        );
+    }
+}

@@ -201,4 +201,45 @@ mod tests {
         assert!(ProfileStatus::ProfileLocked.label().contains("locked"));
         assert!(ProfileStatus::ProfileCorrupt.label().contains("corrupt"));
     }
+
+    #[test]
+    fn lock_file_path_is_under_profile_dir() {
+        let profile = PathBuf::from("/tmp/browser-profile");
+        assert_eq!(
+            lock_file_path(&profile),
+            PathBuf::from("/tmp/browser-profile/.profile.lock")
+        );
+    }
+
+    #[test]
+    fn active_lock_file_marks_profile_locked() {
+        let dir = TempDir::new().unwrap();
+        let profile = dir.path().join("browser-profile");
+        fs::create_dir_all(profile.join("Default")).unwrap();
+        let pid = std::process::id();
+        fs::write(
+            lock_file_path(&profile),
+            format!(r#"{{"pid":{pid}}}"#),
+        )
+        .unwrap();
+        assert_eq!(inspect_local_profile(&profile), ProfileStatus::ProfileLocked);
+    }
+
+    #[test]
+    fn stale_lock_file_allows_profile_ready() {
+        let dir = TempDir::new().unwrap();
+        let profile = dir.path().join("browser-profile");
+        fs::create_dir_all(profile.join("Default")).unwrap();
+        fs::write(lock_file_path(&profile), r#"{"pid":999999999}"#).unwrap();
+        assert_eq!(inspect_local_profile(&profile), ProfileStatus::ProfileReady);
+    }
+
+    #[test]
+    fn local_state_file_also_indicates_ready() {
+        let dir = TempDir::new().unwrap();
+        let profile = dir.path().join("browser-profile");
+        fs::create_dir_all(&profile).unwrap();
+        fs::write(profile.join("Local State"), "{}").unwrap();
+        assert_eq!(inspect_local_profile(&profile), ProfileStatus::ProfileReady);
+    }
 }

@@ -8,7 +8,8 @@ import { chromium } from "playwright";
 import readline from "node:readline";
 import fs from "node:fs";
 import path from "node:path";
-import { detectFromPage, isMarketplaceUrl } from "./facebook-detector.mjs";
+import { detectFromPage } from "./facebook-detector.mjs";
+import { evaluateMarketplaceFromDetection } from "./marketplace-evaluator.mjs";
 
 /** @typedef {"stopped"|"starting"|"ready"|"crashed"} BrowserState */
 /** @typedef {"profile_missing"|"profile_initializing"|"profile_ready"|"profile_locked"|"profile_corrupt"|"profile_reset_required"} ProfileState */
@@ -433,53 +434,7 @@ async function navigateWithRetry(targetUrl, maxAttempts = 2) {
 async function evaluateMarketplaceState() {
   const fb = await detectFromPage(page);
   const url = page.url();
-
-  if (fb.state === "facebook_logged_out" || fb.state === "facebook_session_expired") {
-    return {
-      status: "marketplace_login_required",
-      reason_code: fb.reason_code,
-      current_url: url,
-      facebook_state: fb.state,
-    };
-  }
-  if (fb.state === "facebook_checkpoint") {
-    return {
-      status: "marketplace_checkpoint",
-      reason_code: "facebook_checkpoint",
-      current_url: url,
-      facebook_state: fb.state,
-    };
-  }
-  if (fb.state === "facebook_mfa_required" || fb.state === "facebook_login_in_progress") {
-    return {
-      status: "marketplace_login_required",
-      reason_code: fb.reason_code,
-      current_url: url,
-      facebook_state: fb.state,
-    };
-  }
-  if (isMarketplaceUrl(url)) {
-    return {
-      status: "marketplace_ready",
-      reason_code: "marketplace_loaded",
-      current_url: url,
-      facebook_state: fb.state,
-    };
-  }
-  if (fb.state === "facebook_logged_in" && !isMarketplaceUrl(url)) {
-    return {
-      status: "marketplace_unavailable",
-      reason_code: "not_marketplace_url",
-      current_url: url,
-      facebook_state: fb.state,
-    };
-  }
-  return {
-    status: "marketplace_error",
-    reason_code: "ambiguous_marketplace_state",
-    current_url: url,
-    facebook_state: fb.state,
-  };
+  return evaluateMarketplaceFromDetection(fb, url);
 }
 
 async function handleOpenMarketplace(id, params = {}) {

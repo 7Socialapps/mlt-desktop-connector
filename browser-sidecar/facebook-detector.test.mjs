@@ -72,9 +72,53 @@ function testUrlHelpers() {
   );
 }
 
+function testSessionExpired() {
+  const result = detectFacebookSession({
+    url: "https://www.facebook.com/",
+    title: "Session Expired",
+    hasLoginForm: false,
+    hasCheckpointText: false,
+    hasMfaText: false,
+    hasNavBar: false,
+    hasLogoutSignal: false,
+  });
+  assert.equal(result.state, "facebook_session_expired");
+  assert.equal(result.reason_code, "session_expired");
+}
+
+function testLoginInProgress() {
+  const result = detectFacebookSession({
+    url: "https://www.facebook.com/login.php?login_attempt=1",
+    title: "Facebook",
+    hasLoginForm: true,
+    hasCheckpointText: false,
+    hasMfaText: false,
+    hasNavBar: false,
+    hasLogoutSignal: false,
+  });
+  assert.equal(result.state, "facebook_login_in_progress");
+}
+
+function testNotFacebookUrl() {
+  const result = detectFacebookSession({
+    url: "https://example.com/",
+    title: "Example",
+    hasLoginForm: false,
+    hasCheckpointText: false,
+    hasMfaText: false,
+    hasNavBar: false,
+    hasLogoutSignal: false,
+  });
+  assert.equal(result.state, "facebook_not_checked");
+  assert.equal(result.reason_code, "not_facebook");
+}
+
 testLoggedOutLoginPage();
 testLoggedInHome();
 testCheckpoint();
 testMfa();
+testSessionExpired();
+testLoginInProgress();
+testNotFacebookUrl();
 testUrlHelpers();
 console.log("facebook-detector tests passed");

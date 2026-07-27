@@ -233,4 +233,42 @@ mod tests {
             BrowserRuntimeStatus::BrowserNotInstalled
         );
     }
+
+    #[test]
+    fn apply_detect_when_disabled_stays_stopped() {
+        let svc = BrowserRuntimeService::new(false);
+        svc.apply_detect(SidecarDetectResponse {
+            ok: true,
+            playwright_installed: true,
+            playwright_version: Some("1.52.0".into()),
+            chromium_installed: true,
+            chromium_path: Some("/tmp/chromium".into()),
+            node_version: Some("v20.0.0".into()),
+            detect_error: None,
+            error: None,
+            error_code: None,
+        });
+        assert_eq!(svc.snapshot().status, BrowserRuntimeStatus::BrowserStopped);
+    }
+
+    #[test]
+    fn apply_detect_missing_playwright_is_not_installed() {
+        let svc = BrowserRuntimeService::new(true);
+        svc.apply_detect(SidecarDetectResponse {
+            ok: true,
+            playwright_installed: false,
+            playwright_version: None,
+            chromium_installed: false,
+            chromium_path: None,
+            node_version: Some("v20.0.0".into()),
+            detect_error: None,
+            error: None,
+            error_code: None,
+        });
+        assert_eq!(
+            svc.snapshot().status,
+            BrowserRuntimeStatus::BrowserNotInstalled
+        );
+        assert!(!svc.snapshot().playwright_installed);
+    }
 }

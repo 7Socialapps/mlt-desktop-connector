@@ -133,4 +133,41 @@ mod tests {
         );
         assert_eq!(snap.status, MarketplaceStatus::MarketplaceReady);
     }
+
+    #[test]
+    fn parse_checkpoint_unavailable_and_error() {
+        assert_eq!(
+            parse_marketplace_status("marketplace_checkpoint"),
+            MarketplaceStatus::MarketplaceCheckpoint
+        );
+        assert_eq!(
+            parse_marketplace_status("marketplace_unavailable"),
+            MarketplaceStatus::MarketplaceUnavailable
+        );
+        assert_eq!(
+            parse_marketplace_status("marketplace_error"),
+            MarketplaceStatus::MarketplaceError
+        );
+        assert_eq!(
+            parse_marketplace_status("marketplace_loading"),
+            MarketplaceStatus::MarketplaceLoading
+        );
+    }
+
+    #[test]
+    fn apply_result_preserves_screenshot_path_locally() {
+        let mut snap = MarketplaceSnapshot::default();
+        apply_marketplace_result(
+            &mut snap,
+            &SidecarMarketplaceResult {
+                status: "marketplace_error".into(),
+                checked_at: Utc::now().to_rfc3339(),
+                current_url: "https://www.facebook.com/marketplace/".into(),
+                reason_code: "navigation_timeout".into(),
+                screenshot_path: Some("/tmp/diagnostics/marketplace-failure.png".into()),
+            },
+        );
+        assert_eq!(snap.status, MarketplaceStatus::MarketplaceError);
+        assert!(snap.screenshot_path.is_some());
+    }
 }

@@ -223,4 +223,28 @@ mod tests {
         assert!(FacebookSessionState::FacebookCheckpoint.label().contains("checkpoint"));
         assert!(FacebookSessionState::FacebookMfaRequired.label().contains("MFA"));
     }
+
+    #[test]
+    fn parse_session_expired_and_error_states() {
+        assert_eq!(
+            parse_facebook_state("facebook_session_expired"),
+            FacebookSessionState::FacebookSessionExpired
+        );
+        assert_eq!(
+            parse_facebook_state("facebook_error"),
+            FacebookSessionState::FacebookError
+        );
+        assert_eq!(
+            parse_facebook_state("facebook_login_in_progress"),
+            FacebookSessionState::FacebookLoginInProgress
+        );
+    }
+
+    #[test]
+    fn unknown_state_defaults_to_not_checked() {
+        assert_eq!(
+            parse_facebook_state("unexpected_value"),
+            FacebookSessionState::FacebookNotChecked
+        );
+    }
 }

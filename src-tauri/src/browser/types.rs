@@ -190,3 +190,54 @@ impl BrowserManagerSnapshot {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn operational_states_include_starting_and_restarting() {
+        assert!(BrowserRuntimeStatus::BrowserReady.is_operational());
+        assert!(BrowserRuntimeStatus::BrowserStarting.is_operational());
+        assert!(BrowserRuntimeStatus::BrowserRestarting.is_operational());
+        assert!(!BrowserRuntimeStatus::BrowserStopped.is_operational());
+        assert!(!BrowserRuntimeStatus::BrowserCrashed.is_operational());
+        assert!(!BrowserRuntimeStatus::BrowserError.is_operational());
+    }
+
+    #[test]
+    fn terminal_error_is_only_browser_error() {
+        assert!(BrowserRuntimeStatus::BrowserError.is_terminal_error());
+        assert!(!BrowserRuntimeStatus::BrowserCrashed.is_terminal_error());
+        assert!(!BrowserRuntimeStatus::BrowserReady.is_terminal_error());
+    }
+
+    #[test]
+    fn runtime_status_serializes_snake_case() {
+        let ready = serde_json::to_value(BrowserRuntimeStatus::BrowserReady).unwrap();
+        let crashed = serde_json::to_value(BrowserRuntimeStatus::BrowserCrashed).unwrap();
+        assert_eq!(ready, "browser_ready");
+        assert_eq!(crashed, "browser_crashed");
+    }
+
+    #[test]
+    fn manager_snapshot_from_runtime_defaults_browser_fields() {
+        let runtime = BrowserRuntimeSnapshot {
+            status: BrowserRuntimeStatus::BrowserInstalled,
+            enabled: true,
+            playwright_installed: true,
+            playwright_version: Some("1.52.0".into()),
+            chromium_installed: true,
+            chromium_path: None,
+            node_version: None,
+            last_error: None,
+            last_error_code: None,
+            checked_at: None,
+        };
+        let snap = BrowserManagerSnapshot::from_runtime(&runtime);
+        assert_eq!(snap.status, BrowserRuntimeStatus::BrowserInstalled);
+        assert!(!snap.sidecar_running);
+        assert_eq!(snap.restart_attempts, 0);
+        assert_eq!(snap.profile_status, ProfileStatus::ProfileMissing);
+    }
+}

@@ -376,37 +376,151 @@ pub async fn run_connection_tests(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::browser::{BrowserManagerSnapshot, BrowserRuntimeSnapshot, BrowserRuntimeStatus};
+    use crate::api::types::{ConnectorOs, HeartbeatRequest};
+    use crate::browser::{
+        BrowserManagerSnapshot, BrowserRuntimeSnapshot, BrowserRuntimeStatus,
+        FacebookSessionState, MarketplaceStatus, ProfileStatus,
+    };
 
-    #[test]
-    fn heartbeat_payload_uses_snake_case_facebook_state() {
-        let state = AppState {
+    fn sample_app_state(connection: ConnectionState) -> AppState {
+        AppState {
             device_id: uuid::Uuid::new_v4(),
             environment: "staging".into(),
             paired: true,
             needs_reconnect: false,
-            connection_state: ConnectionState::Connected,
+            connection_state: connection,
             last_heartbeat_at: None,
             last_error: None,
             current_job_id: None,
-        };
-        let browser = BrowserManagerSnapshot::from_runtime(&BrowserRuntimeSnapshot {
-                status: BrowserRuntimeStatus::BrowserReady,
-                enabled: true,
-                playwright_installed: true,
-                playwright_version: Some("1.52.0".into()),
-                chromium_installed: true,
-                chromium_path: None,
-                node_version: None,
-                last_error: None,
-                last_error_code: None,
-                checked_at: None,
-            });
+        }
+    }
+
+    fn sample_browser_snapshot(status: BrowserRuntimeStatus) -> BrowserManagerSnapshot {
+        BrowserManagerSnapshot::from_runtime(&BrowserRuntimeSnapshot {
+            status,
+            enabled: true,
+            playwright_installed: true,
+            playwright_version: Some("1.52.0".into()),
+            chromium_installed: true,
+            chromium_path: None,
+            node_version: None,
+            last_error: None,
+            last_error_code: None,
+            checked_at: None,
+        })
+    }
+
+    #[test]
+    fn heartbeat_payload_uses_snake_case_facebook_state() {
+        let state = sample_app_state(ConnectionState::Connected);
+        let browser = sample_browser_snapshot(BrowserRuntimeStatus::BrowserReady);
         let payload = build_heartbeat_browser_fields(&state, &browser);
         assert_eq!(
             payload.facebook_session_state,
             "facebook_not_checked"
         );
         assert!(!payload.current_browser_url_category.is_empty());
+    }
+
+    #[test]
+    fn connector_stays_ready_when_browser_fails() {
+        let state = sample_app_state(ConnectionState::Connected);
+        let mut browser = sample_browser_snapshot(BrowserRuntimeStatus::BrowserError);
+        browser.last_error_code = Some("BROWSER_CRASHED".into());
+        let payload = build_heartbeat_browser_fields(&state, &browser);
+        assert_eq!(payload.connector_status, "connector_ready");
+        assert_eq!(payload.browser_status, "browser_error");
+        assert_eq!(
+            payload.last_browser_error_code.as_deref(),
+            Some("BROWSER_CRASHED")
+        );
+    }
+
+    #[test]
+    fn heartbeat_request_serializes_snake_case_browser_fields() {
+        let payload = build_heartbeat_browser_fields(
+            &sample_app_state(ConnectionState::Idle),
+            &sample_browser_snapshot(BrowserRuntimeStatus::BrowserReady),
+        );
+        let request = HeartbeatRequest {
+            action: "heartbeat".into(),
+            device_id: "dev-1".into(),
+            user_id: "user-1".into(),
+            dealership_id: "dealer-1".into(),
+            connector_version: payload.connector_version.clone(),
+            os: ConnectorOs::Macos,
+            capabilities: vec!["posting".into()],
+            connector_status: payload.connector_status,
+            browser_status: payload.browser_status,
+            browser_version: payload.browser_version,
+            profile_status: payload.profile_status,
+            facebook_session_state: payload.facebook_session_state,
+            marketplace_status: payload.marketplace_status,
+            current_browser_url_category: payload.current_browser_url_category,
+            last_browser_check_at: payload.last_browser_check_at,
+            last_browser_error_code: payload.last_browser_error_code,
+        };
+        let json = serde_json::to_value(&request).expect("serialize heartbeat");
+        assert_eq!(json["facebook_session_state"], "facebook_not_checked");
+        assert_eq!(json["browser_status"], "browser_ready");
+        assert_eq!(json["profile_status"], "profile_missing");
+        assert_eq!(json["marketplace_status"], "marketplace_not_checked");
+        assert_eq!(json["connector_status"], "connector_ready");
+        assert_eq!(json["current_browser_url_category"], "unknown");
+        assert_eq!(json["deviceId"], "dev-1");
+    }
+
+    #[test]
+    fn connection_test_report_has_expected_shape() {
+        let report = ConnectionTestReport {
+            checks: vec![
+                check_pass("backend_auth", "Backend authentication", "Credentials valid"),
+                check_warn(
+                    "browser_runtime",
+                    "Browser runtime",
+                    "Browser subsystem disabled",
+                    Some("BROWSER_DISABLED"),
+                ),
+            ],
+            overall_status: "warn".into(),
+            checked_at: Utc::now().to_rfc3339(),
+        };
+        let json = serde_json::to_value(&report).expect("serialize report");
+        assert_eq!(json["overall_status"], "warn");
+        assert!(json["checks"].is_array());
+        let first = &json["checks"][0];
+        assert_eq!(first["id"], "backend_auth");
+        assert_eq!(first["status"], "pass");
+        assert_eq!(first["error_code"], serde_json::Value::Null);
+        let second = &json["checks"][1];
+        assert_eq!(second["status"], "warn");
+        assert_eq!(second["error_code"], "BROWSER_DISABLED");
+    }
+
+    #[test]
+    fn heartbeat_url_category_masks_full_facebook_url() {
+        let state = sample_app_state(ConnectionState::Connected);
+        let mut browser = sample_browser_snapshot(BrowserRuntimeStatus::BrowserReady);
+        browser.facebook_session.state = FacebookSessionState::FacebookLoggedIn;
+        browser.facebook_session.current_url =
+            Some("https://www.facebook.com/groups/secret-group-id".into());
+        let payload = build_heartbeat_browser_fields(&state, &browser);
+        assert_eq!(payload.current_browser_url_category, "facebook_other");
+        assert!(!payload.current_browser_url_category.contains("secret"));
+    }
+
+    #[test]
+    fn connection_payload_maps_profile_and_marketplace_snake_case() {
+        let state = sample_app_state(ConnectionState::Reconnecting);
+        let mut browser = sample_browser_snapshot(BrowserRuntimeStatus::BrowserCrashed);
+        browser.profile_status = ProfileStatus::ProfileLocked;
+        browser.marketplace.status = MarketplaceStatus::MarketplaceLoginRequired;
+        browser.facebook_session.state = FacebookSessionState::FacebookLoggedOut;
+        let payload = build_heartbeat_browser_fields(&state, &browser);
+        assert_eq!(payload.connector_status, "connector_reconnecting");
+        assert_eq!(payload.browser_status, "browser_crashed");
+        assert_eq!(payload.profile_status, "profile_locked");
+        assert_eq!(payload.marketplace_status, "marketplace_login_required");
+        assert_eq!(payload.facebook_session_state, "facebook_logged_out");
     }
 }

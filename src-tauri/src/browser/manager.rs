@@ -896,4 +896,34 @@ mod tests {
         assert!(elapsed >= Duration::from_millis(30));
         assert!(t1.join().unwrap());
     }
+
+    #[test]
+    fn parse_profile_status_maps_sidecar_values() {
+        assert_eq!(
+            parse_profile_status("profile_ready"),
+            ProfileStatus::ProfileReady
+        );
+        assert_eq!(
+            parse_profile_status("profile_locked"),
+            ProfileStatus::ProfileLocked
+        );
+        assert_eq!(
+            parse_profile_status("profile_corrupt"),
+            ProfileStatus::ProfileCorrupt
+        );
+        assert_eq!(
+            parse_profile_status("unknown"),
+            ProfileStatus::ProfileMissing
+        );
+    }
+
+    #[test]
+    fn crash_recovery_preserves_restart_window() {
+        assert_eq!(
+            status_after_crash(BrowserRuntimeStatus::BrowserReady, 0, true),
+            BrowserRuntimeStatus::BrowserCrashed
+        );
+        assert!(!should_enter_terminal_error(MAX_AUTO_RESTART_ATTEMPTS - 1));
+        assert!(should_enter_terminal_error(MAX_AUTO_RESTART_ATTEMPTS));
+    }
 }
