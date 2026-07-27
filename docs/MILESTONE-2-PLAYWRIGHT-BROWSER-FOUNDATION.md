@@ -11,7 +11,10 @@
 | **Complete** | 2.7 Heartbeat Integration |
 | **Complete** | 2.8 Desktop UI |
 | **Complete** | 2.10 Health Monitoring |
-| Pending | 2.9, 2.11–2.13 |
+| **Complete** | 2.9 Dashboard contract (implemented in `mlt` repo) |
+| **Complete** | 2.11 Testing |
+| **Complete** | 2.12 Security and Privacy Review |
+| **Complete** | 2.13 Packaging Preparation |
 
 ## Architecture
 
@@ -55,9 +58,24 @@ src-tauri/src/services/
 
 ## Commit sequence
 
-1. `feat(m2.1): playwright runtime foundation` ← **current**
+1. `feat(m2.1): playwright runtime foundation`
 2. `feat(m2.2): browser manager`
-3. … through 2.13
+3. … through `docs(m2.13): packaging preparation for playwright sidecar` ← **Milestone 2 complete**
+
+## Testing
+
+Run the full Milestone 2 test suite:
+
+```bash
+npm test
+```
+
+(Rust unit/integration tests + sidecar Node tests — see 2.11.)
+
+## Security and packaging
+
+- [MILESTONE-2-SECURITY-MODEL.md](./MILESTONE-2-SECURITY-MODEL.md)
+- [MILESTONE-2-PACKAGING.md](./MILESTONE-2-PACKAGING.md)
 
 ## Risks
 
