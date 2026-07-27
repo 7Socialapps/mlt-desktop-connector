@@ -137,6 +137,16 @@ fn browser_get_active_page(
 }
 
 #[tauri::command]
+fn browser_open_marketplace(
+    services: tauri::State<'_, AppServices>,
+    create_vehicle: Option<bool>,
+) -> Result<BrowserManagerSnapshot, String> {
+    services
+        .browser_manager
+        .open_marketplace(create_vehicle.unwrap_or(false))
+}
+
+#[tauri::command]
 fn browser_open_facebook_login(
     services: tauri::State<'_, AppServices>,
 ) -> Result<BrowserManagerSnapshot, String> {
@@ -343,6 +353,7 @@ pub fn run() {
             browser_health_check,
             browser_get_active_page,
             browser_open_facebook_login,
+            browser_open_marketplace,
             browser_detect_facebook_session,
             browser_reset_profile,
             browser_profile_status

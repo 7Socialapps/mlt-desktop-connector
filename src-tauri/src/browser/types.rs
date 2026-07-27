@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use super::profile::ProfileStatus;
 use super::facebook::FacebookSessionSnapshot;
+use super::marketplace::MarketplaceSnapshot;
 
 pub const MAX_AUTO_RESTART_ATTEMPTS: u32 = 5;
 
@@ -85,6 +86,7 @@ pub struct BrowserManagerSnapshot {
     pub profile_status: ProfileStatus,
     pub profile_path: Option<String>,
     pub facebook_session: FacebookSessionSnapshot,
+    pub marketplace: MarketplaceSnapshot,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -184,6 +186,7 @@ impl BrowserManagerSnapshot {
             profile_status: ProfileStatus::ProfileMissing,
             profile_path: None,
             facebook_session: FacebookSessionSnapshot::default(),
+            marketplace: MarketplaceSnapshot::default(),
         }
     }
 }

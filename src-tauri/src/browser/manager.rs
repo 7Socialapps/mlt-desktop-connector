@@ -9,7 +9,8 @@ use tauri::{AppHandle, Emitter};
 use tracing::{info, warn};
 
 use super::facebook::{apply_detection, SidecarFacebookDetection};
-use super::profile::{inspect_local_profile, reset_profile_dir, resolve_profile_dir, ProfileStatus};
+use super::marketplace::{apply_marketplace_result, SidecarMarketplaceResult};
+use super::profile::{inspect_local_profile, reset_profile_dir, resolve_profile_dir, resolve_diagnostics_dir, ProfileStatus};
 use super::runtime::BrowserRuntimeService;
 use super::sidecar::{SidecarDaemon, SidecarEvent};
 use super::types::{
@@ -85,6 +86,11 @@ impl BrowserManager {
             }
             self.daemon.set_profile_dir(profile_path.clone());
             *self.profile_dir.lock() = Some(profile_path);
+        }
+
+        if let Ok(diag_path) = resolve_diagnostics_dir(&app_handle) {
+            let _ = std::fs::create_dir_all(&diag_path);
+            self.daemon.set_diagnostics_dir(diag_path);
         }
 
         if !self.state.lock().enabled {
@@ -169,6 +175,51 @@ impl BrowserManager {
     pub fn restart(&self) -> Result<BrowserManagerSnapshot, String> {
         let _guard = self.lifecycle_lock.lock();
         self.restart_inner(false)
+    }
+
+    pub fn open_marketplace(&self, create_vehicle: bool) -> Result<BrowserManagerSnapshot, String> {
+        let _guard = self.lifecycle_lock.lock();
+        self.ensure_browser_for_navigation()?;
+
+        {
+            let mut guard = self.state.lock();
+            guard.marketplace.status =
+                super::marketplace::MarketplaceStatus::MarketplaceLoading;
+            guard.marketplace.checked_at = Some(Utc::now().to_rfc3339());
+        }
+        self.emit_changed();
+
+        match self.daemon.request(
+            "open_marketplace",
+            serde_json::json!({ "create_vehicle": create_vehicle }),
+            Duration::from_secs(90),
+        ) {
+            Ok(line) => {
+                self.apply_marketplace_result(line.result.clone());
+                if line.ok == Some(false) {
+                    if let Some(result) = line.result {
+                        self.apply_marketplace_result(Some(result));
+                    }
+                }
+                self.emit_changed();
+                if line.ok == Some(false) {
+                    return Err(line
+                        .error
+                        .unwrap_or_else(|| "Marketplace navigation failed".into()));
+                }
+                Ok(self.snapshot())
+            }
+            Err(err) => {
+                {
+                    let mut guard = self.state.lock();
+                    guard.marketplace.status =
+                        super::marketplace::MarketplaceStatus::MarketplaceError;
+                    guard.last_error_code = Some("MARKETPLACE_NAV_FAILED".into());
+                }
+                self.emit_changed();
+                Err(err.to_string())
+            }
+        }
     }
 
     pub fn open_facebook_login(&self) -> Result<BrowserManagerSnapshot, String> {
@@ -632,6 +683,10 @@ impl BrowserManager {
                     SidecarEvent::FacebookSessionChanged => {
                         let _ = manager.detect_facebook_session();
                     }
+                    SidecarEvent::MarketplaceStatusChanged => {
+                        let _ = manager.detect_facebook_session();
+                        manager.emit_changed();
+                    }
                     SidecarEvent::DaemonShutdown => {
                         {
                             let mut guard = manager.state.lock();
@@ -654,6 +709,21 @@ impl BrowserManager {
             lifecycle_lock: self.lifecycle_lock.clone(),
             app_handle: Mutex::new(self.app_handle.lock().clone()),
             monitor_started: Mutex::new(true),
+        }
+    }
+
+    fn apply_marketplace_result(&self, result: Option<serde_json::Value>) {
+        let Some(result) = result else {
+            return;
+        };
+        let mp_value = result
+            .get("marketplace")
+            .cloned()
+            .unwrap_or(result);
+        if let Ok(raw) = serde_json::from_value::<SidecarMarketplaceResult>(mp_value) {
+            let mut guard = self.state.lock();
+            apply_marketplace_result(&mut guard.marketplace, &raw);
+            guard.active_page_url = Some(raw.current_url.clone());
         }
     }
 

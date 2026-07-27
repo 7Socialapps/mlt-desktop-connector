@@ -164,6 +164,7 @@ pub enum SidecarEvent {
     BrowserStopped { pid: Option<u32> },
     BrowserDisconnected { pid: Option<u32> },
     FacebookSessionChanged,
+    MarketplaceStatusChanged,
     DaemonShutdown,
 }
 
@@ -176,6 +177,7 @@ struct SidecarProcess {
 pub struct SidecarDaemon {
     server_path: PathBuf,
     profile_dir: Mutex<Option<PathBuf>>,
+    diagnostics_dir: Mutex<Option<PathBuf>>,
     process: Mutex<Option<SidecarProcess>>,
     request_counter: AtomicU64,
     pending: Arc<Mutex<HashMap<String, Sender<Result<SidecarDaemonLine>>>>>,
@@ -189,6 +191,7 @@ impl SidecarDaemon {
         Self {
             server_path,
             profile_dir: Mutex::new(None),
+            diagnostics_dir: Mutex::new(None),
             process: Mutex::new(None),
             request_counter: AtomicU64::new(0),
             pending: Arc::new(Mutex::new(HashMap::new())),
@@ -213,6 +216,10 @@ impl SidecarDaemon {
         *self.profile_dir.lock() = Some(path);
     }
 
+    pub fn set_diagnostics_dir(&self, path: PathBuf) {
+        *self.diagnostics_dir.lock() = Some(path);
+    }
+
     pub fn start(&self) -> Result<()> {
         if self.is_running() {
             return Ok(());
@@ -235,6 +242,12 @@ impl SidecarDaemon {
             cmd.env(
                 "MLT_BROWSER_PROFILE_DIR",
                 profile.to_string_lossy().into_owned(),
+            );
+        }
+        if let Some(diag) = self.diagnostics_dir.lock().as_ref() {
+            cmd.env(
+                "MLT_BROWSER_DIAGNOSTICS_DIR",
+                diag.to_string_lossy().into_owned(),
             );
         }
 
@@ -331,7 +344,11 @@ impl SidecarDaemon {
         let payload = SidecarRequest {
             id: id.clone(),
             method: method.to_string(),
-            params,
+            params: if params.is_null() {
+                None
+            } else {
+                Some(params)
+            },
         };
 
         {
@@ -375,7 +392,8 @@ impl SidecarDaemon {
 struct SidecarRequest {
     id: String,
     method: String,
-    params: serde_json::Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    params: Option<serde_json::Value>,
 }
 
 fn dispatch_sidecar_event(
@@ -395,6 +413,7 @@ fn dispatch_sidecar_event(
         "browser_stopped" => Some(SidecarEvent::BrowserStopped { pid }),
         "browser_disconnected" => Some(SidecarEvent::BrowserDisconnected { pid }),
         "facebook_session_changed" => Some(SidecarEvent::FacebookSessionChanged),
+        "marketplace_status_changed" => Some(SidecarEvent::MarketplaceStatusChanged),
         "daemon_shutdown" => Some(SidecarEvent::DaemonShutdown),
         _ => None,
     };

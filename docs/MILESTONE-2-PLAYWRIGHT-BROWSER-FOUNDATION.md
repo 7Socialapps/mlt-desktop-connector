@@ -7,7 +7,8 @@
 | **Complete** | 2.3 Persistent Browser Profile |
 | **Complete** | 2.4 Manual Facebook Login Flow |
 | **Complete** | 2.5 Facebook Session Detector |
-| Pending | 2.6–2.13 |
+| **Complete** | 2.6 Marketplace Navigation |
+| Pending | 2.7–2.13 |
 
 ## Architecture
 

@@ -8,7 +8,7 @@ import { chromium } from "playwright";
 import readline from "node:readline";
 import fs from "node:fs";
 import path from "node:path";
-import { detectFromPage } from "./facebook-detector.mjs";
+import { detectFromPage, isMarketplaceUrl } from "./facebook-detector.mjs";
 
 /** @typedef {"stopped"|"starting"|"ready"|"crashed"} BrowserState */
 /** @typedef {"profile_missing"|"profile_initializing"|"profile_ready"|"profile_locked"|"profile_corrupt"|"profile_reset_required"} ProfileState */
@@ -40,12 +40,13 @@ function emit(line) {
   process.stdout.write(`${JSON.stringify(line)}\n`);
 }
 
-function fail(id, errorCode, message) {
+function fail(id, errorCode, message, extra = null) {
   emit({
     id,
     ok: false,
     error_code: errorCode,
     error: message,
+    ...(extra ? { result: extra } : {}),
   });
 }
 
@@ -384,6 +385,166 @@ async function handleOpenFacebookLogin(id) {
   }
 }
 
+function diagnosticsDir() {
+  return process.env.MLT_BROWSER_DIAGNOSTICS_DIR ?? "";
+}
+
+async function captureDiagnosticScreenshot(label) {
+  const dir = diagnosticsDir();
+  if (!dir || !page) return null;
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    const filename = `marketplace-failure-${label}-${Date.now()}.png`;
+    const filepath = path.join(dir, filename);
+    await page.screenshot({ path: filepath, fullPage: false });
+    return filepath;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * @param {string} targetUrl
+ * @returns {Promise<object>}
+ */
+async function navigateWithRetry(targetUrl, maxAttempts = 2) {
+  let lastError = null;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      await page.goto(targetUrl, {
+        waitUntil: "domcontentloaded",
+        timeout: 45_000,
+      });
+      await page.waitForTimeout(2000);
+      return { ok: true, attempt };
+    } catch (err) {
+      lastError = err;
+      if (attempt < maxAttempts) {
+        await page.waitForTimeout(1000 * attempt);
+      }
+    }
+  }
+  throw lastError;
+}
+
+/**
+ * @returns {Promise<object>}
+ */
+async function evaluateMarketplaceState() {
+  const fb = await detectFromPage(page);
+  const url = page.url();
+
+  if (fb.state === "facebook_logged_out" || fb.state === "facebook_session_expired") {
+    return {
+      status: "marketplace_login_required",
+      reason_code: fb.reason_code,
+      current_url: url,
+      facebook_state: fb.state,
+    };
+  }
+  if (fb.state === "facebook_checkpoint") {
+    return {
+      status: "marketplace_checkpoint",
+      reason_code: "facebook_checkpoint",
+      current_url: url,
+      facebook_state: fb.state,
+    };
+  }
+  if (fb.state === "facebook_mfa_required" || fb.state === "facebook_login_in_progress") {
+    return {
+      status: "marketplace_login_required",
+      reason_code: fb.reason_code,
+      current_url: url,
+      facebook_state: fb.state,
+    };
+  }
+  if (isMarketplaceUrl(url)) {
+    return {
+      status: "marketplace_ready",
+      reason_code: "marketplace_loaded",
+      current_url: url,
+      facebook_state: fb.state,
+    };
+  }
+  if (fb.state === "facebook_logged_in" && !isMarketplaceUrl(url)) {
+    return {
+      status: "marketplace_unavailable",
+      reason_code: "not_marketplace_url",
+      current_url: url,
+      facebook_state: fb.state,
+    };
+  }
+  return {
+    status: "marketplace_error",
+    reason_code: "ambiguous_marketplace_state",
+    current_url: url,
+    facebook_state: fb.state,
+  };
+}
+
+async function handleOpenMarketplace(id, params = {}) {
+  if (!page || browserState !== "ready") {
+    fail(id, "NO_ACTIVE_PAGE", "Browser is not ready — launch the browser first");
+    return;
+  }
+
+  const createVehicle = Boolean(params?.create_vehicle);
+  const targetUrl = createVehicle
+    ? "https://www.facebook.com/marketplace/create/vehicle"
+    : "https://www.facebook.com/marketplace/";
+
+  emitEvent("marketplace_status_changed", {
+    status: "marketplace_loading",
+  });
+
+  try {
+    await navigateWithRetry(targetUrl);
+    const evaluation = await evaluateMarketplaceState();
+    const checked_at = new Date().toISOString();
+    let screenshot_path = null;
+
+    if (
+      evaluation.status !== "marketplace_ready" &&
+      evaluation.status !== "marketplace_login_required"
+    ) {
+      screenshot_path = await captureDiagnosticScreenshot(evaluation.status);
+    }
+
+    const result = {
+      ...evaluation,
+      checked_at,
+      screenshot_path,
+    };
+
+    emitEvent("marketplace_status_changed", {
+      status: evaluation.status,
+      reason_code: evaluation.reason_code,
+    });
+
+    if (evaluation.status === "marketplace_error") {
+      fail(id, "MARKETPLACE_NAV_FAILED", "Marketplace navigation failed", result);
+      return;
+    }
+
+    ok(id, { marketplace: result, navigated: true });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    const screenshot_path = await captureDiagnosticScreenshot("navigation_error");
+    const result = {
+      status: "marketplace_error",
+      reason_code: "navigation_timeout",
+      current_url: page.url(),
+      checked_at: new Date().toISOString(),
+      screenshot_path,
+    };
+    emitEvent("marketplace_status_changed", {
+      status: "marketplace_error",
+      reason_code: "navigation_timeout",
+    });
+    fail(id, "MARKETPLACE_NAV_FAILED", message);
+  }
+}
+
 async function handleDetectFacebookSession(id) {
   if (!page || browserState !== "ready") {
     fail(id, "NO_ACTIVE_PAGE", "Browser is not ready");
@@ -439,7 +600,7 @@ async function dispatch(line) {
     return;
   }
 
-  const { id, method } = msg;
+  const { id, method, params } = msg;
   if (!id || !method) {
     emit({
       ok: false,
@@ -474,6 +635,9 @@ async function dispatch(line) {
         break;
       case "detect_facebook_session":
         await handleDetectFacebookSession(id);
+        break;
+      case "open_marketplace":
+        await handleOpenMarketplace(id, params ?? {});
         break;
       case "get_active_page":
         await handleGetActivePage(id);
