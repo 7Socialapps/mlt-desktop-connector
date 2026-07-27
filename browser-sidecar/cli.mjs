@@ -109,7 +109,8 @@ async function launchTest() {
     headless: false,
     args: ["--disable-dev-shm-usage"],
   });
-  const pid = browser.process()?.pid ?? null;
+  const pid =
+    typeof browser.process === "function" ? (browser.process()?.pid ?? null) : null;
   if (pid) {
     writeTestState({ pid, launched_at: new Date().toISOString() });
   }

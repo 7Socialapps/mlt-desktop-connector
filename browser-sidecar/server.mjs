@@ -18,6 +18,11 @@ import {
   waitForPageReady,
 } from "./navigation.mjs";
 import { verifyVehicleCreateFromPage } from "./vehicle-create-verifier.mjs";
+import {
+  isBrowserContextConnected,
+  profileStateWhileBrowserRunning,
+  resolveBrowserProcessPid,
+} from "./browser-process.mjs";
 
 /** @typedef {"stopped"|"starting"|"ready"|"crashed"} BrowserState */
 /** @typedef {"profile_missing"|"profile_initializing"|"profile_ready"|"profile_locked"|"profile_corrupt"|"profile_reset_required"} ProfileState */
@@ -139,29 +144,27 @@ function inspectProfileOnDisk() {
 }
 
 function currentStatus() {
-  const alive = browserPid ? isProcessAlive(browserPid) : false;
-  if (context) {
-    try {
-      const browser = context.browser();
-      if (browser && !browser.isConnected()) {
-        browserState = "crashed";
-      }
-    } catch {
-      browserState = "crashed";
-    }
-  }
-  if (browserState === "ready" && browserPid && !alive) {
+  const connected = isBrowserContextConnected(context, browserState);
+  const alive = browserPid ? isProcessAlive(browserPid) : connected;
+
+  if (context && browserState === "ready" && !connected) {
     browserState = "crashed";
   }
-  if (browserState === "ready" && profileState !== "profile_initializing") {
-    profileState = "profile_ready";
+  if (browserState === "ready" && browserPid && !isProcessAlive(browserPid) && !connected) {
+    browserState = "crashed";
+  }
+
+  const runningProfile = profileStateWhileBrowserRunning(browserState, context);
+  if (runningProfile) {
+    profileState = runningProfile;
   } else if (browserState === "stopped") {
     profileState = inspectProfileOnDisk();
   }
+
   return {
     browser_state: browserState,
     pid: browserPid,
-    browser_connected: Boolean(context?.browser()?.isConnected()),
+    browser_connected: connected,
     process_alive: alive,
     profile_status: profileState,
     profile_path: profileDir() || null,
@@ -192,30 +195,33 @@ async function teardownBrowser(reason = "stop") {
 }
 
 function attachDisconnectHandler() {
-  const browser = context?.browser();
-  if (!browser) {
-    return;
-  }
-  browser.on("disconnected", () => {
-    if (browserState === "ready" || browserState === "starting") {
-      browserState = "crashed";
-      emitEvent("browser_disconnected", {
-        pid: browserPid,
-        reason: "disconnected",
-      });
+  try {
+    const browser = context?.browser();
+    if (!browser || typeof browser.on !== "function") {
+      return;
     }
-    context = null;
-    page = null;
-    browserPid = null;
-    removeLockFile();
-  });
+    browser.on("disconnected", () => {
+      if (browserState === "ready" || browserState === "starting") {
+        browserState = "crashed";
+        emitEvent("browser_disconnected", {
+          pid: browserPid,
+          reason: "disconnected",
+        });
+      }
+      context = null;
+      page = null;
+      browserPid = null;
+      removeLockFile();
+    });
+  } catch {
+    /* persistent context may not expose browser() — rely on explicit stop/crash detection */
+  }
 }
 
 async function handleLaunch(id) {
   if (context) {
     try {
-      const browser = context.browser();
-      if (browser?.isConnected()) {
+      if (isBrowserContextConnected(context, "ready")) {
         ok(id, {
           ...currentStatus(),
           already_running: true,
@@ -266,7 +272,7 @@ async function handleLaunch(id) {
       args: ["--disable-dev-shm-usage"],
     });
     attachDisconnectHandler();
-    browserPid = context.browser()?.process()?.pid ?? null;
+    browserPid = resolveBrowserProcessPid(context);
     if (browserPid) {
       writeLockFile(browserPid);
     }

@@ -875,7 +875,11 @@ impl BrowserManager {
             guard.profile_status = parse_profile_status(ps);
         }
         match status.browser_state.as_deref() {
-            Some("ready") => guard.status = BrowserRuntimeStatus::BrowserReady,
+            Some("ready") => {
+                guard.status = BrowserRuntimeStatus::BrowserReady;
+                guard.last_error = None;
+                guard.last_error_code = None;
+            }
             Some("starting") => guard.status = BrowserRuntimeStatus::BrowserStarting,
             Some("crashed") => guard.status = BrowserRuntimeStatus::BrowserCrashed,
             Some("stopped") | None => {
@@ -1007,6 +1011,34 @@ mod tests {
             parse_profile_status("unknown"),
             ProfileStatus::ProfileMissing
         );
+    }
+
+    #[test]
+    fn apply_sidecar_status_ready_without_pid_clears_launch_error() {
+        let runtime = Arc::new(BrowserRuntimeService::new(false));
+        let daemon = Arc::new(SidecarDaemon::new(std::path::PathBuf::new()));
+        let manager = BrowserManager::new(runtime, daemon);
+        let mut snap = manager.snapshot();
+        snap.last_error = Some("context.browser(...).process is not a function".into());
+        snap.last_error_code = Some("LAUNCH_FAILED".into());
+        snap.status = BrowserRuntimeStatus::BrowserError;
+
+        manager.apply_sidecar_status(
+            &mut snap,
+            &SidecarStatusResult {
+                browser_state: Some("ready".into()),
+                pid: None,
+                profile_status: Some("profile_ready".into()),
+                browser_connected: Some(true),
+                process_alive: Some(true),
+            },
+        );
+
+        assert_eq!(snap.status, BrowserRuntimeStatus::BrowserReady);
+        assert_eq!(snap.profile_status, ProfileStatus::ProfileReady);
+        assert!(snap.browser_pid.is_none());
+        assert!(snap.last_error.is_none());
+        assert!(snap.last_error_code.is_none());
     }
 
     #[test]
