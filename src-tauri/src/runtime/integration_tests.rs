@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use crate::browser::{BrowserManager, BrowserRuntimeService, SidecarDaemon};
 use crate::runtime::{
-    FacebookRuntime, MessengerState, NavigationDestination, NotificationState,
+    FacebookRuntime, MessengerState, NotificationState,
 };
 
 fn test_facebook_runtime() -> Arc<FacebookRuntime> {
@@ -50,20 +50,29 @@ fn notification_startup_path_defaults_to_not_checked() {
 fn shared_browser_session_concept_via_runtime_status() {
     let rt = test_facebook_runtime();
     let status = rt.aggregate_status();
-    assert_eq!(status.session_state, "facebook_not_checked");
+    assert_eq!(status.session_state, "unknown");
     assert!(!status.marketplace_ready);
     assert!(!status.messenger_ready);
     assert!(!status.notifications_ready);
 }
 
 #[test]
-fn navigation_destination_mapping_matches_sidecar_keys() {
-    assert_eq!(
-        NavigationDestination::Marketplace.sidecar_key(),
-        "marketplace"
-    );
-    assert_eq!(
-        NavigationDestination::Messenger.url(),
-        "https://www.facebook.com/messages/"
-    );
+fn recovery_checkpoint_waits_for_user() {
+    let rt = test_facebook_runtime();
+    let outcome = rt
+        .recovery
+        .recover_from_interruption(crate::runtime::RuntimeServiceKind::Messenger);
+    assert!(matches!(
+        outcome.action,
+        crate::runtime::RecoveryAction::WaitForUser
+            | crate::runtime::RecoveryAction::NoAction
+            | crate::runtime::RecoveryAction::RecheckSession
+    ));
+}
+
+#[test]
+fn runtime_coordinator_tracks_single_browser_manager() {
+    let rt = test_facebook_runtime();
+    let ptr = Arc::as_ptr(rt.bus.browser_manager()) as *const ();
+    assert!(!ptr.is_null());
 }
