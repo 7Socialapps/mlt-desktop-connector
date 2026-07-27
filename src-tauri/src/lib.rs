@@ -1,4 +1,5 @@
 mod api;
+mod browser;
 mod config;
 mod credentials;
 mod device;
@@ -29,6 +30,7 @@ use services::{
     enable_polling_if_authenticated, HeartbeatService, PairingCoordinator, PairingUiState,
     PollingService,
 };
+use browser::{BrowserRuntimeService, BrowserRuntimeSnapshot};
 
 use state::{AppState, ConnectionState};
 
@@ -37,6 +39,7 @@ struct AppServices {
     state: Arc<Mutex<AppState>>,
     pairing: Arc<PairingCoordinator>,
     polling: Arc<PollingService>,
+    browser_runtime: Arc<BrowserRuntimeService>,
 }
 
 #[tauri::command]
@@ -62,6 +65,27 @@ async fn start_pairing_session(
     let device_id = services.state.lock().device_id.to_string();
     tracing::info!(device_id = %device_id, device_name = ?device_name, "start_pairing_session command invoked");
     services.pairing.start(device_id, device_name).await
+}
+
+#[tauri::command]
+fn get_browser_runtime_status(services: tauri::State<'_, AppServices>) -> BrowserRuntimeSnapshot {
+    services.browser_runtime.snapshot()
+}
+
+#[tauri::command]
+fn detect_browser_runtime(services: tauri::State<'_, AppServices>) -> Result<BrowserRuntimeSnapshot, String> {
+    let snapshot = services.browser_runtime.detect()?;
+    Ok(snapshot)
+}
+
+#[tauri::command]
+fn browser_test_launch(services: tauri::State<'_, AppServices>) -> Result<BrowserRuntimeSnapshot, String> {
+    services.browser_runtime.test_launch()
+}
+
+#[tauri::command]
+fn browser_test_close(services: tauri::State<'_, AppServices>) -> Result<BrowserRuntimeSnapshot, String> {
+    services.browser_runtime.test_close()
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -177,6 +201,17 @@ pub fn run() {
                 }
             });
 
+            let browser_runtime = browser::init(browser::is_browser_enabled());
+            let browser_detect = browser_runtime.clone();
+            let browser_app = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let _ = browser_detect.detect();
+                let _ = browser_app.emit(
+                    "connector://browser-changed",
+                    browser_detect.snapshot(),
+                );
+            });
+
             let shutdown = Arc::new(ShutdownCoordinator::new(heartbeat.clone(), polling.clone()));
             spawn_sleep_resume_monitor(app.handle().clone(), state.clone(), heartbeat);
 
@@ -188,6 +223,7 @@ pub fn run() {
                 state: state.clone(),
                 pairing,
                 polling,
+                browser_runtime,
             });
 
             info!(
@@ -204,7 +240,11 @@ pub fn run() {
             get_status,
             get_connector_version,
             get_pairing_state,
-            start_pairing_session
+            start_pairing_session,
+            get_browser_runtime_status,
+            detect_browser_runtime,
+            browser_test_launch,
+            browser_test_close
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
@@ -271,7 +311,7 @@ fn build_main_window(app: &tauri::AppHandle) -> tauri::Result<()> {
 
     WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
         .title("MLT Desktop Connector")
-        .inner_size(440.0, 420.0)
+        .inner_size(440.0, 620.0)
         .resizable(true)
         .build()?;
 

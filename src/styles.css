@@ -127,17 +127,66 @@ footer p {
   line-height: 1.4;
 }
 
-#start-pairing {
+#start-pairing:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.browser-section {
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid #2a3544;
+}
+
+.browser-section h2 {
+  font-size: 0.95rem;
+  margin: 0 0 0.5rem;
+}
+
+.button-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
   margin-top: 0.5rem;
-  padding: 0.5rem 1rem;
+}
+
+.button-row button,
+#start-pairing {
+  padding: 0.5rem 0.75rem;
   cursor: pointer;
   border-radius: 6px;
   border: 1px solid #3a4a5c;
   background: #1a2433;
   color: inherit;
+  font-size: 0.8rem;
 }
 
-#start-pairing:disabled {
+.button-row button:disabled {
   opacity: 0.6;
   cursor: not-allowed;
+}
+
+.badge-browser-browser_installed,
+.badge-browser-browser_ready {
+  background: #1a3d2e;
+  color: #7dffb2;
+}
+
+.badge-browser-browser_not_installed,
+.badge-browser-browser_stopped {
+  background: #2a3544;
+  color: #9aa7b8;
+}
+
+.badge-browser-browser_starting,
+.badge-browser-browser_installing,
+.badge-browser-browser_restarting {
+  background: #3d341a;
+  color: #ffd27d;
+}
+
+.badge-browser-browser_error,
+.badge-browser-browser_crashed {
+  background: #3d1a1a;
+  color: #ff9d9d;
 }

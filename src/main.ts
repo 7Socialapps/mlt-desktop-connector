@@ -21,11 +21,37 @@ interface PairingState {
   error: string | null;
 }
 
+interface BrowserRuntimeSnapshot {
+  status: string;
+  enabled: boolean;
+  playwright_installed: boolean;
+  playwright_version: string | null;
+  chromium_installed: boolean;
+  chromium_path: string | null;
+  node_version: string | null;
+  last_error: string | null;
+  last_error_code: string | null;
+  checked_at: string | null;
+}
+
 const app = document.querySelector<HTMLDivElement>("#app")!;
 let pairingActionError: string | null = null;
+let browserActionError: string | null = null;
 
-function render(status: ConnectorStatus, pairing: PairingState) {
+function browserStatusLabel(status: string): string {
+  return status.replaceAll("_", " ");
+}
+
+function render(
+  status: ConnectorStatus,
+  pairing: PairingState,
+  browser: BrowserRuntimeSnapshot,
+) {
   const displayError = pairing.error ?? pairingActionError;
+  const canLaunchBrowser =
+    browser.enabled &&
+    browser.chromium_installed &&
+    browser.status !== "browser_starting";
 
   app.innerHTML = `
     <main class="status-window">
@@ -50,6 +76,32 @@ function render(status: ConnectorStatus, pairing: PairingState) {
             : ""
         }
       </dl>
+
+      <section class="browser-section">
+        <h2>Browser Runtime (Milestone 2.1)</h2>
+        <dl>
+          <div><dt>Runtime state</dt><dd><span class="badge badge-browser-${browser.status}">${browserStatusLabel(browser.status)}</span></dd></div>
+          <div><dt>Playwright</dt><dd>${browser.playwright_installed ? (browser.playwright_version ?? "installed") : "not installed"}</dd></div>
+          <div><dt>Chromium</dt><dd>${browser.chromium_installed ? "available" : "not installed"}</dd></div>
+          <div><dt>Node</dt><dd>${browser.node_version ?? "—"}</dd></div>
+          <div><dt>Last checked</dt><dd>${browser.checked_at ?? "—"}</dd></div>
+        </dl>
+        ${
+          !browser.chromium_installed && browser.enabled
+            ? `<p class="helper">Run <code>npm run browser:install</code> once to download Chromium (~150MB). The connector will not download browsers automatically.</p>`
+            : ""
+        }
+        ${
+          browser.last_error || browserActionError
+            ? `<p class="error" role="alert">Browser: ${browserActionError ?? browser.last_error}</p>`
+            : ""
+        }
+        <div class="button-row">
+          <button id="detect-browser">Detect Runtime</button>
+          <button id="launch-browser-test" ${canLaunchBrowser ? "" : "disabled"}>Launch Test Browser</button>
+          <button id="close-browser-test" ${browser.status === "browser_ready" ? "" : "disabled"}>Close Test Browser</button>
+        </div>
+      </section>
 
       <section class="pairing-section">
         <h2>Pair with MLT Dashboard</h2>
@@ -82,6 +134,15 @@ function render(status: ConnectorStatus, pairing: PairingState) {
   document.querySelector("#start-pairing")?.addEventListener("click", () => {
     void startPairing();
   });
+  document.querySelector("#detect-browser")?.addEventListener("click", () => {
+    void detectBrowser();
+  });
+  document.querySelector("#launch-browser-test")?.addEventListener("click", () => {
+    void launchBrowserTest();
+  });
+  document.querySelector("#close-browser-test")?.addEventListener("click", () => {
+    void closeBrowserTest();
+  });
 }
 
 async function startPairing() {
@@ -100,18 +161,55 @@ async function startPairing() {
   }
 }
 
+async function detectBrowser() {
+  browserActionError = null;
+  try {
+    await invoke<BrowserRuntimeSnapshot>("detect_browser_runtime");
+    await refresh();
+  } catch (err) {
+    browserActionError = err instanceof Error ? err.message : String(err);
+    await refresh();
+  }
+}
+
+async function launchBrowserTest() {
+  browserActionError = null;
+  try {
+    await invoke<BrowserRuntimeSnapshot>("browser_test_launch");
+    await refresh();
+  } catch (err) {
+    browserActionError = err instanceof Error ? err.message : String(err);
+    await refresh();
+  }
+}
+
+async function closeBrowserTest() {
+  browserActionError = null;
+  try {
+    await invoke<BrowserRuntimeSnapshot>("browser_test_close");
+    await refresh();
+  } catch (err) {
+    browserActionError = err instanceof Error ? err.message : String(err);
+    await refresh();
+  }
+}
+
 async function refreshWith(pairing: PairingState) {
-  const status = await invoke<ConnectorStatus>("get_status");
-  render(status, pairing);
+  const [status, browser] = await Promise.all([
+    invoke<ConnectorStatus>("get_status"),
+    invoke<BrowserRuntimeSnapshot>("get_browser_runtime_status"),
+  ]);
+  render(status, pairing, browser);
 }
 
 async function refresh() {
   try {
-    const [status, pairing] = await Promise.all([
+    const [status, pairing, browser] = await Promise.all([
       invoke<ConnectorStatus>("get_status"),
       invoke<PairingState>("get_pairing_state"),
+      invoke<BrowserRuntimeSnapshot>("get_browser_runtime_status"),
     ]);
-    render(status, pairing);
+    render(status, pairing, browser);
   } catch (err) {
     app.innerHTML = `<p class="error">Failed to load status: ${String(err)}</p>`;
   }
@@ -123,6 +221,9 @@ async function main() {
     void refresh();
   });
   await listen("connector://pairing-changed", () => {
+    void refresh();
+  });
+  await listen("connector://browser-changed", () => {
     void refresh();
   });
 

@@ -10,11 +10,15 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "tauri:dev": "bash -c 'set -a && [ -f .env ] && . ./.env; set +a && tauri dev'",
-    "tauri:build": "tauri build"
+    "tauri:build": "tauri build",
+    "browser:install": "playwright install chromium",
+    "browser:detect": "node browser-sidecar/cli.mjs detect",
+    "browser:test": "node browser-sidecar/cli.mjs launch-test && node browser-sidecar/cli.mjs close-test"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.4.0",
-    "@tauri-apps/plugin-shell": "^2.2.0"
+    "@tauri-apps/plugin-shell": "^2.2.0",
+    "playwright": "^1.52.0"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.4.0",
