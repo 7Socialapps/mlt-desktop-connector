@@ -137,6 +137,20 @@ fn browser_get_active_page(
 }
 
 #[tauri::command]
+fn browser_open_facebook_login(
+    services: tauri::State<'_, AppServices>,
+) -> Result<BrowserManagerSnapshot, String> {
+    services.browser_manager.open_facebook_login()
+}
+
+#[tauri::command]
+fn browser_detect_facebook_session(
+    services: tauri::State<'_, AppServices>,
+) -> Result<BrowserManagerSnapshot, String> {
+    services.browser_manager.detect_facebook_session()
+}
+
+#[tauri::command]
 fn browser_reset_profile(
     services: tauri::State<'_, AppServices>,
 ) -> Result<BrowserManagerSnapshot, String> {
@@ -328,6 +342,8 @@ pub fn run() {
             browser_restart,
             browser_health_check,
             browser_get_active_page,
+            browser_open_facebook_login,
+            browser_detect_facebook_session,
             browser_reset_profile,
             browser_profile_status
         ])

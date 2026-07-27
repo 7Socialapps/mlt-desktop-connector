@@ -5,7 +5,8 @@
 | **Complete** | 2.1 Playwright Runtime Foundation |
 | **Complete** | 2.2 Browser Manager |
 | **Complete** | 2.3 Persistent Browser Profile |
-| Pending | 2.4–2.13 |
+| **Complete** | 2.4 Manual Facebook Login Flow |
+| Pending | 2.5–2.13 |
 
 ## Architecture
 

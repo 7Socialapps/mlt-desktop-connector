@@ -8,6 +8,7 @@ import { chromium } from "playwright";
 import readline from "node:readline";
 import fs from "node:fs";
 import path from "node:path";
+import { detectFromPage } from "./facebook-detector.mjs";
 
 /** @typedef {"stopped"|"starting"|"ready"|"crashed"} BrowserState */
 /** @typedef {"profile_missing"|"profile_initializing"|"profile_ready"|"profile_locked"|"profile_corrupt"|"profile_reset_required"} ProfileState */
@@ -20,6 +21,8 @@ let page = null;
 let browserState = "stopped";
 /** @type {ProfileState} */
 let profileState = "profile_missing";
+/** @type {object | null} */
+let lastFacebookDetection = null;
 /** @type {number | null} */
 let browserPid = null;
 
@@ -321,6 +324,79 @@ async function handleProfileStatus(id) {
   });
 }
 
+async function runFacebookDetection() {
+  if (!page || browserState !== "ready") {
+    return null;
+  }
+  try {
+    const detection = await detectFromPage(page);
+    lastFacebookDetection = detection;
+    emitEvent("facebook_session_changed", {
+      state: detection.state,
+      reason_code: detection.reason_code,
+      marketplace_accessible: detection.marketplace_accessible,
+    });
+    return detection;
+  } catch {
+    return null;
+  }
+}
+
+async function handleOpenFacebookLogin(id) {
+  if (!page || browserState !== "ready") {
+    fail(id, "NO_ACTIVE_PAGE", "Browser is not ready — launch the browser first");
+    return;
+  }
+
+  lastFacebookDetection = {
+    state: "facebook_login_in_progress",
+    checked_at: new Date().toISOString(),
+    current_url: page.url(),
+    marketplace_accessible: false,
+    reason_code: "navigation_started",
+  };
+  emitEvent("facebook_session_changed", {
+    state: "facebook_login_in_progress",
+    reason_code: "navigation_started",
+  });
+
+  try {
+    await page.goto("https://www.facebook.com/", {
+      waitUntil: "domcontentloaded",
+      timeout: 60_000,
+    });
+    await page.waitForTimeout(1500);
+    const detection = await runFacebookDetection();
+    ok(id, {
+      navigated: true,
+      facebook: detection ?? lastFacebookDetection,
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    lastFacebookDetection = {
+      state: "facebook_error",
+      checked_at: new Date().toISOString(),
+      current_url: page.url(),
+      marketplace_accessible: false,
+      reason_code: "navigation_failed",
+    };
+    fail(id, "FACEBOOK_NAV_FAILED", message);
+  }
+}
+
+async function handleDetectFacebookSession(id) {
+  if (!page || browserState !== "ready") {
+    fail(id, "NO_ACTIVE_PAGE", "Browser is not ready");
+    return;
+  }
+  const detection = await runFacebookDetection();
+  if (!detection) {
+    fail(id, "DETECTION_FAILED", "Facebook session detection failed");
+    return;
+  }
+  ok(id, { facebook: detection });
+}
+
 async function handleGetActivePage(id) {
   if (!page || browserState !== "ready") {
     fail(id, "NO_ACTIVE_PAGE", "Browser is not ready");
@@ -392,6 +468,12 @@ async function dispatch(line) {
         break;
       case "profile_status":
         await handleProfileStatus(id);
+        break;
+      case "open_facebook_login":
+        await handleOpenFacebookLogin(id);
+        break;
+      case "detect_facebook_session":
+        await handleDetectFacebookSession(id);
         break;
       case "get_active_page":
         await handleGetActivePage(id);

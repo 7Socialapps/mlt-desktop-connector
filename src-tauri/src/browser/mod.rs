@@ -1,9 +1,11 @@
+mod facebook;
 mod manager;
 mod profile;
 mod runtime;
 mod sidecar;
 mod types;
 
+pub use facebook::{FacebookSessionSnapshot, FacebookSessionState};
 pub use manager::BrowserManager;
 pub use profile::{ProfileSnapshot, ProfileStatus};
 pub use runtime::BrowserRuntimeService;

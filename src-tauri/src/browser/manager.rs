@@ -8,6 +8,7 @@ use parking_lot::Mutex;
 use tauri::{AppHandle, Emitter};
 use tracing::{info, warn};
 
+use super::facebook::{apply_detection, SidecarFacebookDetection};
 use super::profile::{inspect_local_profile, reset_profile_dir, resolve_profile_dir, ProfileStatus};
 use super::runtime::BrowserRuntimeService;
 use super::sidecar::{SidecarDaemon, SidecarEvent};
@@ -168,6 +169,67 @@ impl BrowserManager {
     pub fn restart(&self) -> Result<BrowserManagerSnapshot, String> {
         let _guard = self.lifecycle_lock.lock();
         self.restart_inner(false)
+    }
+
+    pub fn open_facebook_login(&self) -> Result<BrowserManagerSnapshot, String> {
+        let _guard = self.lifecycle_lock.lock();
+        self.ensure_browser_for_navigation()?;
+
+        {
+            let mut guard = self.state.lock();
+            guard.facebook_session.state =
+                super::facebook::FacebookSessionState::FacebookLoginInProgress;
+            guard.facebook_session.checked_at = Some(Utc::now().to_rfc3339());
+            guard.facebook_session.reason_code = Some("navigation_started".into());
+        }
+        self.emit_changed();
+
+        match self.daemon.request(
+            "open_facebook_login",
+            serde_json::json!({}),
+            Duration::from_secs(90),
+        ) {
+            Ok(line) => {
+                self.apply_facebook_result(line.result);
+                self.emit_changed();
+                Ok(self.snapshot())
+            }
+            Err(err) => {
+                self.record_error("Failed to open Facebook login", Some("FACEBOOK_NAV_FAILED".into()));
+                {
+                    let mut guard = self.state.lock();
+                    guard.facebook_session.state =
+                        super::facebook::FacebookSessionState::FacebookError;
+                }
+                self.emit_changed();
+                Err(err.to_string())
+            }
+        }
+    }
+
+    pub fn detect_facebook_session(&self) -> Result<BrowserManagerSnapshot, String> {
+        if !self.state.lock().enabled {
+            return Ok(self.snapshot());
+        }
+        if self.snapshot().status != BrowserRuntimeStatus::BrowserReady {
+            return Ok(self.snapshot());
+        }
+
+        match self.daemon.request(
+            "detect_facebook_session",
+            serde_json::json!({}),
+            REQUEST_TIMEOUT,
+        ) {
+            Ok(line) => {
+                self.apply_facebook_result(line.result);
+                self.emit_changed();
+                Ok(self.snapshot())
+            }
+            Err(err) => {
+                warn!(error = %err, "facebook session detection failed");
+                Ok(self.snapshot())
+            }
+        }
     }
 
     pub fn reset_profile(&self) -> Result<BrowserManagerSnapshot, String> {
@@ -567,6 +629,9 @@ impl BrowserManager {
                     SidecarEvent::BrowserDisconnected { .. } => {
                         manager.handle_unexpected_disconnect();
                     }
+                    SidecarEvent::FacebookSessionChanged => {
+                        let _ = manager.detect_facebook_session();
+                    }
                     SidecarEvent::DaemonShutdown => {
                         {
                             let mut guard = manager.state.lock();
@@ -590,6 +655,37 @@ impl BrowserManager {
             app_handle: Mutex::new(self.app_handle.lock().clone()),
             monitor_started: Mutex::new(true),
         }
+    }
+
+    fn apply_facebook_result(&self, result: Option<serde_json::Value>) {
+        let Some(result) = result else {
+            return;
+        };
+        let fb_value = result
+            .get("facebook")
+            .cloned()
+            .unwrap_or(result);
+        if let Ok(detection) = serde_json::from_value::<SidecarFacebookDetection>(fb_value) {
+            let mut guard = self.state.lock();
+            apply_detection(&mut guard.facebook_session, &detection);
+            guard.active_page_url = Some(detection.current_url.clone());
+        }
+    }
+
+    fn ensure_browser_for_navigation(&self) -> Result<(), String> {
+        if !self.state.lock().enabled {
+            return Err("Browser subsystem disabled".into());
+        }
+        if self.snapshot().status.is_terminal_error() {
+            return Err("Browser is in terminal error state".into());
+        }
+        if self.snapshot().status != BrowserRuntimeStatus::BrowserReady {
+            self.launch_inner(false)?;
+        }
+        if self.snapshot().status != BrowserRuntimeStatus::BrowserReady {
+            return Err("Browser is not ready".into());
+        }
+        Ok(())
     }
 
     fn merge_runtime(&self, runtime: &super::types::BrowserRuntimeSnapshot) {

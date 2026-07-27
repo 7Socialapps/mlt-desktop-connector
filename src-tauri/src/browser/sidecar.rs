@@ -163,6 +163,7 @@ pub enum SidecarEvent {
     BrowserReady { pid: Option<u32> },
     BrowserStopped { pid: Option<u32> },
     BrowserDisconnected { pid: Option<u32> },
+    FacebookSessionChanged,
     DaemonShutdown,
 }
 
@@ -393,6 +394,7 @@ fn dispatch_sidecar_event(
         "browser_ready" => Some(SidecarEvent::BrowserReady { pid }),
         "browser_stopped" => Some(SidecarEvent::BrowserStopped { pid }),
         "browser_disconnected" => Some(SidecarEvent::BrowserDisconnected { pid }),
+        "facebook_session_changed" => Some(SidecarEvent::FacebookSessionChanged),
         "daemon_shutdown" => Some(SidecarEvent::DaemonShutdown),
         _ => None,
     };
