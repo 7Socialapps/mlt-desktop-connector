@@ -30,7 +30,9 @@ use services::{
     enable_polling_if_authenticated, HeartbeatService, PairingCoordinator, PairingUiState,
     PollingService,
 };
-use browser::{BrowserRuntimeService, BrowserRuntimeSnapshot};
+use browser::{
+    BrowserActivePage, BrowserManagerSnapshot, BrowserRuntimeService, BrowserRuntimeSnapshot,
+};
 
 use state::{AppState, ConnectionState};
 
@@ -40,6 +42,7 @@ struct AppServices {
     pairing: Arc<PairingCoordinator>,
     polling: Arc<PollingService>,
     browser_runtime: Arc<BrowserRuntimeService>,
+    browser_manager: Arc<browser::BrowserManager>,
 }
 
 #[tauri::command]
@@ -73,19 +76,64 @@ fn get_browser_runtime_status(services: tauri::State<'_, AppServices>) -> Browse
 }
 
 #[tauri::command]
-fn detect_browser_runtime(services: tauri::State<'_, AppServices>) -> Result<BrowserRuntimeSnapshot, String> {
-    let snapshot = services.browser_runtime.detect()?;
-    Ok(snapshot)
+fn detect_browser_runtime(
+    services: tauri::State<'_, AppServices>,
+) -> Result<BrowserRuntimeSnapshot, String> {
+    services.browser_runtime.detect()
 }
 
 #[tauri::command]
-fn browser_test_launch(services: tauri::State<'_, AppServices>) -> Result<BrowserRuntimeSnapshot, String> {
+fn browser_test_launch(
+    services: tauri::State<'_, AppServices>,
+) -> Result<BrowserRuntimeSnapshot, String> {
     services.browser_runtime.test_launch()
 }
 
 #[tauri::command]
-fn browser_test_close(services: tauri::State<'_, AppServices>) -> Result<BrowserRuntimeSnapshot, String> {
+fn browser_test_close(
+    services: tauri::State<'_, AppServices>,
+) -> Result<BrowserRuntimeSnapshot, String> {
     services.browser_runtime.test_close()
+}
+
+#[tauri::command]
+fn get_browser_status(services: tauri::State<'_, AppServices>) -> BrowserManagerSnapshot {
+    services.browser_manager.get_status()
+}
+
+#[tauri::command]
+fn browser_launch(
+    services: tauri::State<'_, AppServices>,
+) -> Result<BrowserManagerSnapshot, String> {
+    services.browser_manager.launch()
+}
+
+#[tauri::command]
+fn browser_stop(
+    services: tauri::State<'_, AppServices>,
+) -> Result<BrowserManagerSnapshot, String> {
+    services.browser_manager.stop()
+}
+
+#[tauri::command]
+fn browser_restart(
+    services: tauri::State<'_, AppServices>,
+) -> Result<BrowserManagerSnapshot, String> {
+    services.browser_manager.restart()
+}
+
+#[tauri::command]
+fn browser_health_check(
+    services: tauri::State<'_, AppServices>,
+) -> Result<BrowserManagerSnapshot, String> {
+    services.browser_manager.health_check()
+}
+
+#[tauri::command]
+fn browser_get_active_page(
+    services: tauri::State<'_, AppServices>,
+) -> Result<BrowserActivePage, String> {
+    services.browser_manager.get_active_page()
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -174,7 +222,10 @@ pub fn run() {
                         guard.last_error = None;
                         guard.connection_state = ConnectionState::Idle;
                         drop(guard);
-                        let _ = restore_app.emit("connector://status-changed", restore_state.lock().status_snapshot());
+                        let _ = restore_app.emit(
+                            "connector://status-changed",
+                            restore_state.lock().status_snapshot(),
+                        );
                     }
                     Ok(false) => {
                         let mut guard = restore_state.lock();
@@ -185,7 +236,10 @@ pub fn run() {
                         }
                         guard.connection_state = ConnectionState::Offline;
                         drop(guard);
-                        let _ = restore_app.emit("connector://status-changed", restore_state.lock().status_snapshot());
+                        let _ = restore_app.emit(
+                            "connector://status-changed",
+                            restore_state.lock().status_snapshot(),
+                        );
                     }
                     Err(err) => {
                         tracing::warn!(error = %err, "credential bootstrap failed");
@@ -202,17 +256,25 @@ pub fn run() {
             });
 
             let browser_runtime = browser::init(browser::is_browser_enabled());
-            let browser_detect = browser_runtime.clone();
+            let browser_manager = browser::init_manager(browser_runtime.clone());
+
+            let browser_init = browser_manager.clone();
             let browser_app = app.handle().clone();
             tauri::async_runtime::spawn(async move {
-                let _ = browser_detect.detect();
+                if let Err(err) = browser_init.initialize(browser_app.clone()) {
+                    tracing::warn!(error = %err, "browser manager initialization failed");
+                }
                 let _ = browser_app.emit(
                     "connector://browser-changed",
-                    browser_detect.snapshot(),
+                    browser_init.get_status(),
                 );
             });
 
-            let shutdown = Arc::new(ShutdownCoordinator::new(heartbeat.clone(), polling.clone()));
+            let shutdown = Arc::new(ShutdownCoordinator::new(
+                heartbeat.clone(),
+                polling.clone(),
+                browser_manager.clone(),
+            ));
             spawn_sleep_resume_monitor(app.handle().clone(), state.clone(), heartbeat);
 
             build_tray(app.handle(), shutdown.clone(), state.clone())?;
@@ -224,6 +286,7 @@ pub fn run() {
                 pairing,
                 polling,
                 browser_runtime,
+                browser_manager,
             });
 
             info!(
@@ -244,7 +307,13 @@ pub fn run() {
             get_browser_runtime_status,
             detect_browser_runtime,
             browser_test_launch,
-            browser_test_close
+            browser_test_close,
+            get_browser_status,
+            browser_launch,
+            browser_stop,
+            browser_restart,
+            browser_health_check,
+            browser_get_active_page
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
@@ -311,7 +380,7 @@ fn build_main_window(app: &tauri::AppHandle) -> tauri::Result<()> {
 
     WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
         .title("MLT Desktop Connector")
-        .inner_size(440.0, 620.0)
+        .inner_size(440.0, 720.0)
         .resizable(true)
         .build()?;
 

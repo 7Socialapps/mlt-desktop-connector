@@ -2,8 +2,9 @@
 
 | Status | Sub-milestone |
 |---|---|
-| **In progress** | 2.1 Playwright Runtime Foundation |
-| Pending | 2.2–2.13 |
+| **Complete** | 2.1 Playwright Runtime Foundation |
+| **Complete** | 2.2 Browser Manager |
+| Pending | 2.3–2.13 |
 
 ## Architecture
 

@@ -49,6 +49,10 @@ impl BrowserRuntimeService {
         self.state.lock().enabled
     }
 
+    pub fn cli_path(&self) -> &PathBuf {
+        &self.cli_path
+    }
+
     fn set_status(&self, status: BrowserRuntimeStatus) {
         self.state.lock().status = status;
     }

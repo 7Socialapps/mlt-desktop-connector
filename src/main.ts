@@ -34,6 +34,17 @@ interface BrowserRuntimeSnapshot {
   checked_at: string | null;
 }
 
+interface BrowserManagerSnapshot extends BrowserRuntimeSnapshot {
+  sidecar_running: boolean;
+  browser_pid: number | null;
+  active_page_url: string | null;
+  active_page_title: string | null;
+  restart_attempts: number;
+  max_restart_attempts: number;
+  last_health_check_at: string | null;
+  auto_restart_enabled: boolean;
+}
+
 const app = document.querySelector<HTMLDivElement>("#app")!;
 let pairingActionError: string | null = null;
 let browserActionError: string | null = null;
@@ -45,13 +56,17 @@ function browserStatusLabel(status: string): string {
 function render(
   status: ConnectorStatus,
   pairing: PairingState,
-  browser: BrowserRuntimeSnapshot,
+  browser: BrowserManagerSnapshot,
 ) {
   const displayError = pairing.error ?? pairingActionError;
   const canLaunchBrowser =
     browser.enabled &&
     browser.chromium_installed &&
-    browser.status !== "browser_starting";
+    browser.sidecar_running &&
+    !["browser_starting", "browser_restarting"].includes(browser.status);
+  const canStopBrowser = ["browser_ready", "browser_starting", "browser_restarting"].includes(
+    browser.status,
+  );
 
   app.innerHTML = `
     <main class="status-window">
@@ -78,13 +93,16 @@ function render(
       </dl>
 
       <section class="browser-section">
-        <h2>Browser Runtime (Milestone 2.1)</h2>
+        <h2>Browser Manager (Milestone 2.2)</h2>
         <dl>
-          <div><dt>Runtime state</dt><dd><span class="badge badge-browser-${browser.status}">${browserStatusLabel(browser.status)}</span></dd></div>
+          <div><dt>Browser state</dt><dd><span class="badge badge-browser-${browser.status}">${browserStatusLabel(browser.status)}</span></dd></div>
+          <div><dt>Sidecar</dt><dd>${browser.sidecar_running ? "running" : "stopped"}</dd></div>
           <div><dt>Playwright</dt><dd>${browser.playwright_installed ? (browser.playwright_version ?? "installed") : "not installed"}</dd></div>
           <div><dt>Chromium</dt><dd>${browser.chromium_installed ? "available" : "not installed"}</dd></div>
-          <div><dt>Node</dt><dd>${browser.node_version ?? "—"}</dd></div>
-          <div><dt>Last checked</dt><dd>${browser.checked_at ?? "—"}</dd></div>
+          <div><dt>Browser PID</dt><dd>${browser.browser_pid ?? "—"}</dd></div>
+          <div><dt>Active page</dt><dd>${browser.active_page_url ?? "—"}</dd></div>
+          <div><dt>Restart attempts</dt><dd>${browser.restart_attempts} / ${browser.max_restart_attempts}</dd></div>
+          <div><dt>Last health check</dt><dd>${browser.last_health_check_at ?? "—"}</dd></div>
         </dl>
         ${
           !browser.chromium_installed && browser.enabled
@@ -98,8 +116,18 @@ function render(
         }
         <div class="button-row">
           <button id="detect-browser">Detect Runtime</button>
-          <button id="launch-browser-test" ${canLaunchBrowser ? "" : "disabled"}>Launch Test Browser</button>
-          <button id="close-browser-test" ${browser.status === "browser_ready" ? "" : "disabled"}>Close Test Browser</button>
+          <button id="launch-browser" ${canLaunchBrowser ? "" : "disabled"}>Launch Browser</button>
+          <button id="stop-browser" ${canStopBrowser ? "" : "disabled"}>Stop Browser</button>
+          <button id="restart-browser" ${browser.sidecar_running && browser.chromium_installed ? "" : "disabled"}>Restart Browser</button>
+          <button id="health-check-browser" ${browser.sidecar_running ? "" : "disabled"}>Health Check</button>
+        </div>
+      </section>
+
+      <section class="browser-section">
+        <h2>Runtime Test (Milestone 2.1)</h2>
+        <div class="button-row">
+          <button id="launch-browser-test" ${browser.enabled && browser.chromium_installed ? "" : "disabled"}>Launch Test Browser</button>
+          <button id="close-browser-test">Close Test Browser</button>
         </div>
       </section>
 
@@ -137,6 +165,18 @@ function render(
   document.querySelector("#detect-browser")?.addEventListener("click", () => {
     void detectBrowser();
   });
+  document.querySelector("#launch-browser")?.addEventListener("click", () => {
+    void launchBrowser();
+  });
+  document.querySelector("#stop-browser")?.addEventListener("click", () => {
+    void stopBrowser();
+  });
+  document.querySelector("#restart-browser")?.addEventListener("click", () => {
+    void restartBrowser();
+  });
+  document.querySelector("#health-check-browser")?.addEventListener("click", () => {
+    void healthCheckBrowser();
+  });
   document.querySelector("#launch-browser-test")?.addEventListener("click", () => {
     void launchBrowserTest();
   });
@@ -172,6 +212,50 @@ async function detectBrowser() {
   }
 }
 
+async function launchBrowser() {
+  browserActionError = null;
+  try {
+    await invoke<BrowserManagerSnapshot>("browser_launch");
+    await refresh();
+  } catch (err) {
+    browserActionError = err instanceof Error ? err.message : String(err);
+    await refresh();
+  }
+}
+
+async function stopBrowser() {
+  browserActionError = null;
+  try {
+    await invoke<BrowserManagerSnapshot>("browser_stop");
+    await refresh();
+  } catch (err) {
+    browserActionError = err instanceof Error ? err.message : String(err);
+    await refresh();
+  }
+}
+
+async function restartBrowser() {
+  browserActionError = null;
+  try {
+    await invoke<BrowserManagerSnapshot>("browser_restart");
+    await refresh();
+  } catch (err) {
+    browserActionError = err instanceof Error ? err.message : String(err);
+    await refresh();
+  }
+}
+
+async function healthCheckBrowser() {
+  browserActionError = null;
+  try {
+    await invoke<BrowserManagerSnapshot>("browser_health_check");
+    await refresh();
+  } catch (err) {
+    browserActionError = err instanceof Error ? err.message : String(err);
+    await refresh();
+  }
+}
+
 async function launchBrowserTest() {
   browserActionError = null;
   try {
@@ -197,7 +281,7 @@ async function closeBrowserTest() {
 async function refreshWith(pairing: PairingState) {
   const [status, browser] = await Promise.all([
     invoke<ConnectorStatus>("get_status"),
-    invoke<BrowserRuntimeSnapshot>("get_browser_runtime_status"),
+    invoke<BrowserManagerSnapshot>("get_browser_status"),
   ]);
   render(status, pairing, browser);
 }
@@ -207,7 +291,7 @@ async function refresh() {
     const [status, pairing, browser] = await Promise.all([
       invoke<ConnectorStatus>("get_status"),
       invoke<PairingState>("get_pairing_state"),
-      invoke<BrowserRuntimeSnapshot>("get_browser_runtime_status"),
+      invoke<BrowserManagerSnapshot>("get_browser_status"),
     ]);
     render(status, pairing, browser);
   } catch (err) {
