@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/event";
+import { listen } from "@tauri-apps/api/event";
 import "./styles.css";
 
 interface ConnectorStatus {
