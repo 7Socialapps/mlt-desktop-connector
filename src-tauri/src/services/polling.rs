@@ -42,6 +42,7 @@ impl PollingService {
         let busy_flag = service.busy.clone();
 
         tauri::async_runtime::spawn(async move {
+            let app_handle = app.clone();
             loop {
                 if shutdown_flag.load(Ordering::SeqCst) {
                     info!("polling loop stopped");
@@ -58,7 +59,7 @@ impl PollingService {
                     continue;
                 }
 
-                match poll_and_process(&client, &state, busy_flag.clone()).await {
+                match poll_and_process(&app_handle, &client, &state, busy_flag.clone()).await {
                     Ok(()) => {}
                     Err(err) => {
                         error!(error = %err, "job transport handler failed");
@@ -96,6 +97,7 @@ pub fn enable_polling_if_authenticated(polling: &PollingService, state: &mut App
 }
 
 async fn poll_and_process(
+    app: &AppHandle,
     client: &ConnectorApiClient,
     state: &Arc<Mutex<AppState>>,
     busy: Arc<AtomicBool>,
@@ -144,7 +146,7 @@ async fn poll_and_process(
         guard.current_job_id = Some(job.id.clone());
         guard.connection_state = ConnectionState::Connected;
     }
-    let result = process_job(client, &creds, &device_id, &job.id).await;
+    let result = process_job(app, client, &creds, &device_id, &job.id).await;
     busy.store(false, Ordering::SeqCst);
     {
         let mut guard = state.lock();
@@ -154,6 +156,7 @@ async fn poll_and_process(
 }
 
 async fn process_job(
+    app: &AppHandle,
     client: &ConnectorApiClient,
     creds: &crate::credentials::StoredCredentials,
     device_id: &str,
@@ -245,21 +248,7 @@ async fn process_job(
     }
 
     if matches!(payload.execution_mode, ExecutionMode::PrepareForReview) {
-        info!(
-            job_id,
-            execution_mode = payload.execution_mode.as_str(),
-            inventory_id = %payload.inventory_id,
-            "M3 automation not yet implemented — validated payload queued for future worker (no Facebook form opened)"
-        );
-        fail_job(
-            client,
-            job_id,
-            &scoped,
-            "M3_AUTOMATION_NOT_IMPLEMENTED",
-            "M3 automation not yet implemented",
-        )
-        .await?;
-        return Ok(());
+        return run_prepare_for_review_assets_flow(app, client, job_id, &scoped, &payload).await;
     }
 
     warn!(job_id, "unexpected execution mode after validation");
@@ -311,6 +300,85 @@ async fn run_transport_test_flow(
         .map_err(|e| format!("complete_job failed for {job_id}: {e}"))?;
 
     info!(job_id, "job completed — transport test finished (dashboard should show posted)");
+    Ok(())
+}
+
+async fn run_prepare_for_review_assets_flow(
+    app: &AppHandle,
+    client: &ConnectorApiClient,
+    job_id: &str,
+    scoped: &str,
+    payload: &VehicleJobPayload,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    info!(
+        job_id,
+        image_count = payload.ordered_image_urls.len(),
+        "prepare_for_review — downloading listing photos"
+    );
+
+    client
+        .update_status(
+            UpdateStatusRequest {
+                action: "update_status".into(),
+                job_id: job_id.to_string(),
+                status: "images_downloading".into(),
+                progress: 35,
+                current_step: "Downloading listing photos".into(),
+            },
+            scoped,
+        )
+        .await
+        .map_err(|e| format!("update_status failed for {job_id} at images_downloading: {e}"))?;
+
+    match crate::marketplace::download_job_assets(app, payload).await {
+        Ok((manifest, workspace)) => {
+            info!(
+                job_id,
+                prepared_images = manifest.images.len(),
+                workspace = %workspace.path().display(),
+                "listing photos prepared"
+            );
+            client
+                .update_status(
+                    UpdateStatusRequest {
+                        action: "update_status".into(),
+                        job_id: job_id.to_string(),
+                        status: "ready_for_review".into(),
+                        progress: 45,
+                        current_step: format!(
+                            "Prepared {} listing photo(s); Marketplace form automation pending",
+                            manifest.images.len()
+                        ),
+                    },
+                    scoped,
+                )
+                .await
+                .map_err(|e| format!("update_status failed for {job_id} after assets: {e}"))?;
+
+            let _ = workspace.cleanup();
+
+            fail_job(
+                client,
+                job_id,
+                scoped,
+                "M3_AUTOMATION_NOT_IMPLEMENTED",
+                "Listing photos prepared; Marketplace form automation not yet implemented",
+            )
+            .await?;
+        }
+        Err(err) => {
+            warn!(job_id, error = %err.user_message(), "listing photo preparation failed");
+            fail_job(
+                client,
+                job_id,
+                scoped,
+                "IMAGE_DOWNLOAD_FAILED",
+                &err.user_message(),
+            )
+            .await?;
+        }
+    }
+
     Ok(())
 }
 
