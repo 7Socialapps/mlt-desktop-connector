@@ -175,11 +175,16 @@ async fn send_heartbeat(
     if creds.access_token.is_empty() {
         return Err("access token unavailable — reconnect required".into());
     }
-    let (device_id, browser_fields) = {
+    let (device_id, launch_session_id, launch_status, browser_fields) = {
         let guard = state.lock();
         let browser_snapshot = browser_manager.snapshot();
         let fields = build_heartbeat_browser_fields(&guard, &browser_snapshot, facebook_runtime);
-        (guard.device_id.to_string(), fields)
+        (
+            guard.device_id.to_string(),
+            guard.launch_session_id.clone(),
+            guard.launch_status.clone(),
+            fields,
+        )
     };
 
     let request = HeartbeatRequest {
@@ -218,6 +223,8 @@ async fn send_heartbeat(
         last_navigation_error: browser_fields.last_navigation_error,
         last_health_check_at: browser_fields.last_health_check_at,
         last_restart_at: browser_fields.last_restart_at,
+        launch_session_id,
+        launch_status,
     };
 
     let response = client

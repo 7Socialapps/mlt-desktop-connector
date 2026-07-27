@@ -188,6 +188,28 @@ pub struct HeartbeatRequest {
     pub last_health_check_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_restart_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub launch_session_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub launch_status: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RedeemLaunchSessionRequest {
+    pub action: String,
+    pub session_id: String,
+    pub device_id: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RedeemLaunchSessionResponse {
+    pub ok: bool,
+    pub nonce: Option<String>,
+    pub expires_at: Option<String>,
+    pub error: Option<String>,
+    pub error_code: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

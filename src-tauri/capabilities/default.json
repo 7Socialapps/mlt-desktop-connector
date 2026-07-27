@@ -11,6 +11,7 @@
     "core:window:allow-unminimize",
     "core:tray:default",
     "core:menu:default",
-    "core:event:default"
+    "core:event:default",
+    "deep-link:default"
   ]
 }

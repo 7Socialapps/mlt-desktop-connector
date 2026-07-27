@@ -3,9 +3,11 @@ mod browser;
 mod config;
 mod credentials;
 mod device;
+mod launch_session;
 mod lifecycle;
 mod logging;
 mod marketplace;
+mod protocol;
 mod runtime;
 mod services;
 mod state;
@@ -17,7 +19,7 @@ use parking_lot::Mutex;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    Emitter, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder,
+    Emitter, Listener, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder,
 };
 use tracing::info;
 
@@ -30,7 +32,8 @@ use lifecycle::{
 };
 use services::{
     enable_polling_if_authenticated, run_connection_tests, BrowserHealthService,
-    ConnectionTestReport, HeartbeatService, PairingCoordinator, PairingUiState, PollingService,
+    ChromiumProvisionService, ChromiumProvisionState, ConnectionTestReport, DeepLinkCoordinator,
+    DeepLinkUiState, HeartbeatService, PairingCoordinator, PairingUiState, PollingService,
 };
 use services::reconnect::ReconnectService;
 use browser::{
@@ -39,7 +42,11 @@ use browser::{
 use runtime::FacebookRuntime;
 use runtime::DiagnosticsSnapshot;
 
+use launch_session::{LaunchSessionService, LaunchSessionStore};
+use protocol::extract_deep_link_from_argv;
 use state::{AppState, ConnectionState};
+
+struct PendingDeepLinks(Mutex<Vec<String>>);
 
 struct AppServices {
     shutdown: Arc<ShutdownCoordinator>,
@@ -51,6 +58,8 @@ struct AppServices {
     browser_runtime: Arc<BrowserRuntimeService>,
     browser_manager: Arc<browser::BrowserManager>,
     facebook_runtime: Arc<FacebookRuntime>,
+    deep_link: Arc<DeepLinkCoordinator>,
+    chromium_provision: Arc<ChromiumProvisionService>,
 }
 
 #[tauri::command]
@@ -248,6 +257,18 @@ fn open_log_folder(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn get_deep_link_state(services: tauri::State<'_, AppServices>) -> DeepLinkUiState {
+    services.deep_link.snapshot()
+}
+
+#[tauri::command]
+fn get_chromium_provision_state(
+    services: tauri::State<'_, AppServices>,
+) -> ChromiumProvisionState {
+    services.chromium_provision.snapshot()
+}
+
+#[tauri::command]
 async fn reconnect_device(services: tauri::State<'_, AppServices>) -> Result<state::StatusSnapshot, String> {
     let refreshed = ReconnectService::try_refresh_tokens(services.api_client.as_ref()).await;
     services.heartbeat.trigger_now();
@@ -310,8 +331,17 @@ pub fn run() {
     let api_client = Arc::new(ConnectorApiClient::new(config.clone()));
 
     tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+        .plugin(tauri_plugin_deep_link::init())
+        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
             focus_main_window(app);
+            if let Some(url) = extract_deep_link_from_argv(&argv) {
+                if let Some(services) = app.try_state::<AppServices>() {
+                    services.deep_link.enqueue(url);
+                    services.deep_link.drain_pending();
+                } else if let Some(pending) = app.try_state::<PendingDeepLinks>() {
+                    pending.0.lock().push(url);
+                }
+            }
         }))
         .setup(move |app| {
             let _log_guard = logging::init_logging(app.handle())
@@ -319,6 +349,23 @@ pub fn run() {
 
             let _cred_store = credentials::init(app.handle())
                 .map_err(|e| -> Box<dyn std::error::Error> { e.to_string().into() })?;
+
+            if let Ok(resource_dir) = app.path().resource_dir() {
+                browser::set_resource_root(resource_dir);
+            }
+
+            let launch_store = LaunchSessionStore::load(
+                &app
+                    .path()
+                    .app_data_dir()
+                    .map_err(|e| e.to_string())?
+                    .join("launch-sessions")
+                    .join("redeemed.json"),
+            );
+            let launch_sessions = Arc::new(LaunchSessionService::new(
+                api_client.clone(),
+                launch_store,
+            ));
 
             let device_id = device::load_or_create_device_id(app.handle())?;
             let cred_status = credentials::bootstrap_from_disk();
@@ -335,6 +382,10 @@ pub fn run() {
                 last_heartbeat_at: None,
                 last_error: initial_error.clone(),
                 current_job_id: None,
+                deep_link_route: None,
+                deep_link_message: None,
+                launch_session_id: None,
+                launch_status: None,
             }));
 
             mark_instance_ready(&state);
@@ -391,6 +442,48 @@ pub fn run() {
                 api_client.clone(),
                 polling.clone(),
             ));
+
+            let heartbeat_for_deep_link = heartbeat.clone();
+            let deep_link = Arc::new(DeepLinkCoordinator::new(
+                app.handle().clone(),
+                state.clone(),
+                pairing.clone(),
+                facebook_runtime.clone(),
+                launch_sessions,
+                heartbeat_for_deep_link,
+            ));
+
+            let chromium_provision =
+                Arc::new(ChromiumProvisionService::new(browser_runtime.clone()));
+            chromium_provision.start_if_needed(app.handle().clone());
+
+            app.manage(PendingDeepLinks(Mutex::new(Vec::new())));
+
+            if let Some(url) = extract_deep_link_from_argv(
+                &std::env::args().collect::<Vec<_>>(),
+            ) {
+                deep_link.enqueue(url);
+            }
+
+            #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+            {
+                use tauri_plugin_deep_link::DeepLinkExt;
+                app.deep_link().register_all()?;
+                let deep_link_listener = deep_link.clone();
+                let app_handle = app.handle().clone();
+                app.listen("deep-link://new-url", move |event| {
+                    if let Ok(urls) = serde_json::from_str::<Vec<String>>(event.payload()) {
+                        for url in urls {
+                            deep_link_listener.enqueue(url);
+                        }
+                        deep_link_listener.drain_pending();
+                    } else if let Some(url) = event.payload().strip_prefix('"').and_then(|s| s.strip_suffix('"')) {
+                        deep_link_listener.enqueue(url.to_string());
+                        deep_link_listener.drain_pending();
+                    }
+                    let _ = app_handle;
+                });
+            }
 
             {
                 let mut guard = state.lock();
@@ -491,7 +584,16 @@ pub fn run() {
                 browser_runtime,
                 browser_manager,
                 facebook_runtime,
+                deep_link: deep_link.clone(),
+                chromium_provision,
             });
+
+            if let Some(pending) = app.try_state::<PendingDeepLinks>() {
+                for url in pending.0.lock().drain(..) {
+                    deep_link.enqueue(url);
+                }
+            }
+            deep_link.drain_pending();
 
             info!(
                 version = version::CONNECTOR_VERSION,
@@ -530,7 +632,9 @@ pub fn run() {
             browser_profile_status,
             run_connection_tests_cmd,
             open_log_folder,
-            reconnect_device
+            reconnect_device,
+            get_deep_link_state,
+            get_chromium_provision_state
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
