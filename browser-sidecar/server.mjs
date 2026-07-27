@@ -18,6 +18,9 @@ import {
   waitForPageReady,
 } from "./navigation.mjs";
 import { verifyVehicleCreateFromPage } from "./vehicle-create-verifier.mjs";
+import { fillVehicleFormFromPage } from "./marketplace/form-fill.mjs";
+import { uploadVehicleImagesFromPage, retrySingleImageUpload } from "./marketplace/image-upload.mjs";
+import { verifyFilledFormFromPage } from "./marketplace/form-verify.mjs";
 import {
   isBrowserContextConnected,
   profileStateWhileBrowserRunning,
@@ -593,6 +596,105 @@ async function handleDetectFacebookSession(id) {
   ok(id, { facebook: detection });
 }
 
+async function handleFillVehicleForm(id, params = {}) {
+  if (!page || browserState !== "ready") {
+    fail(id, "NO_ACTIVE_PAGE", "Browser is not ready — launch the browser first");
+    return;
+  }
+
+  const payload = params?.payload ?? params?.fields ?? {};
+  try {
+    const result = await fillVehicleFormFromPage(page, payload);
+    ok(id, { form_fill: result });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    fail(id, "FORM_FILL_FAILED", message);
+  }
+}
+
+async function handleUploadVehicleImages(id, params = {}) {
+  if (!page || browserState !== "ready") {
+    fail(id, "NO_ACTIVE_PAGE", "Browser is not ready — launch the browser first");
+    return;
+  }
+
+  const images = Array.isArray(params?.images) ? params.images : [];
+  try {
+    let result = await uploadVehicleImagesFromPage(page, images);
+
+    const failed = result.uploaded.filter((u) => !u.ok);
+    for (const entry of failed) {
+      const img = images.find((i) => i.index === entry.index);
+      if (!img?.local_path) continue;
+      const retry = await retrySingleImageUpload(page, img.local_path);
+      entry.ok = retry.ok;
+      entry.reason = retry.ok ? undefined : "retry_failed";
+      entry.attempts = (entry.attempts ?? 1) + 1;
+    }
+
+    result = {
+      ...result,
+      uploaded: result.uploaded,
+      thumbnail_count: result.thumbnail_count,
+    };
+
+    ok(id, { image_upload: result });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    fail(id, "IMAGE_UPLOAD_FAILED", message);
+  }
+}
+
+async function handleVerifyFilledForm(id, params = {}) {
+  if (!page || browserState !== "ready") {
+    fail(id, "NO_ACTIVE_PAGE", "Browser is not ready — launch the browser first");
+    return;
+  }
+
+  const expectedValues = params?.expected_values ?? params?.payload ?? {};
+  const expectedImageCount = Number(params?.expected_image_count ?? 0);
+
+  try {
+    const report = await verifyFilledFormFromPage(page, expectedValues, expectedImageCount);
+    let screenshot_path = null;
+    if (!report.ready) {
+      screenshot_path = await captureDiagnosticScreenshot(report.reason_code ?? "verify_failed");
+    }
+    ok(id, {
+      form_verification: {
+        ...report,
+        screenshot_path,
+      },
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    const screenshot_path = await captureDiagnosticScreenshot("verify_filled_error");
+    fail(id, "FORM_VERIFY_FAILED", message, {
+      form_verification: {
+        ready: false,
+        reason_code: "verify_error",
+        screenshot_path,
+        current_url: page.url(),
+        checked_at: new Date().toISOString(),
+      },
+    });
+  }
+}
+
+async function handleBringBrowserForward(id) {
+  if (!page || browserState !== "ready") {
+    fail(id, "NO_ACTIVE_PAGE", "Browser is not ready");
+    return;
+  }
+  try {
+    await page.bringToFront();
+    ok(id, { brought_forward: true, current_url: page.url() });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    fail(id, "BRING_FORWARD_FAILED", message);
+  }
+}
+
 async function handleVerifyVehicleCreate(id) {
   if (!page || browserState !== "ready") {
     fail(id, "NO_ACTIVE_PAGE", "Browser is not ready — launch the browser first");
@@ -711,6 +813,18 @@ async function dispatch(line) {
         break;
       case "verify_vehicle_create":
         await handleVerifyVehicleCreate(id);
+        break;
+      case "fill_vehicle_form":
+        await handleFillVehicleForm(id, params ?? {});
+        break;
+      case "upload_vehicle_images":
+        await handleUploadVehicleImages(id, params ?? {});
+        break;
+      case "verify_filled_form":
+        await handleVerifyFilledForm(id, params ?? {});
+        break;
+      case "bring_browser_forward":
+        await handleBringBrowserForward(id);
         break;
       case "navigate":
         await handleNavigate(id, params ?? {});
