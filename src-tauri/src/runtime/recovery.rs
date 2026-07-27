@@ -175,8 +175,8 @@ mod tests {
         let daemon = Arc::new(SidecarDaemon::new(PathBuf::new()));
         let manager = Arc::new(crate::browser::BrowserManager::new(runtime, daemon));
         let bus = Arc::new(ServiceBus::new(manager));
-        let session = Arc::new(FacebookSessionService::new(bus.clone()));
-        let navigation = Arc::new(NavigationService::new(bus));
+        let navigation = Arc::new(NavigationService::new(bus.clone()));
+        let session = Arc::new(FacebookSessionService::new(bus.clone(), navigation.clone()));
         RecoveryService::new(
             Arc::new(ServiceBus::new(Arc::new(crate::browser::BrowserManager::new(
                 Arc::new(BrowserRuntimeService::new(false)),

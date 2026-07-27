@@ -70,6 +70,13 @@ interface RuntimeStatus {
   current_destination: string | null;
   current_service: string | null;
   last_navigation_error: string | null;
+  current_url: string | null;
+  navigation_target: string | null;
+  last_successful_url: string | null;
+  navigation_started_at: string | null;
+  navigation_completed_at: string | null;
+  navigation_failure_reason: string | null;
+  timeout_reason: string | null;
 }
 
 interface ConnectionCheck {
@@ -181,6 +188,13 @@ function render(
           <div><dt>Facebook Session</dt><dd>${labelize(runtime.facebook_session_state)}</dd></div>
           <div><dt>Marketplace</dt><dd>${labelize(runtime.marketplace_state)}</dd></div>
           <div><dt>Current Destination</dt><dd>${runtime.current_destination ? labelize(runtime.current_destination) : "—"}</dd></div>
+          <div><dt>Current URL</dt><dd class="mono">${runtime.current_url ?? browser.active_page_url ?? "—"}</dd></div>
+          <div><dt>Navigation Target</dt><dd class="mono">${runtime.navigation_target ?? "—"}</dd></div>
+          <div><dt>Last Successful URL</dt><dd class="mono">${runtime.last_successful_url ?? "—"}</dd></div>
+          <div><dt>Navigation Started</dt><dd>${runtime.navigation_started_at ?? "—"}</dd></div>
+          <div><dt>Navigation Completed</dt><dd>${runtime.navigation_completed_at ?? "—"}</dd></div>
+          <div><dt>Navigation Failure</dt><dd>${runtime.navigation_failure_reason ?? "—"}</dd></div>
+          <div><dt>Timeout Reason</dt><dd>${runtime.timeout_reason ?? "—"}</dd></div>
           <div><dt>Current Service</dt><dd>${runtime.current_service ? labelize(runtime.current_service) : "—"}</dd></div>
           <div><dt>Last Navigation Error</dt><dd>${runtime.last_navigation_error ?? "—"}</dd></div>
           <div><dt>Chromium</dt><dd>${browser.chromium_installed ? (browser.playwright_version ?? "available") : "not installed"}</dd></div>

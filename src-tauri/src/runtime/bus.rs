@@ -9,6 +9,19 @@ use tracing::debug;
 use crate::browser::BrowserManager;
 use crate::browser::SidecarDaemonLine;
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct NavigationDiagnostics {
+    pub current_url: Option<String>,
+    pub navigation_target: Option<String>,
+    pub last_successful_url: Option<String>,
+    pub navigation_started_at: Option<String>,
+    pub navigation_completed_at: Option<String>,
+    pub navigation_failure_reason: Option<String>,
+    pub timeout_reason: Option<String>,
+    pub current_destination: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeServiceKind {
@@ -40,6 +53,7 @@ pub struct ServiceBus {
     cancel_requested: Arc<AtomicBool>,
     last_navigation_error: Mutex<Option<String>>,
     last_destination: Mutex<Option<String>>,
+    navigation_diagnostics: Mutex<NavigationDiagnostics>,
 }
 
 impl ServiceBus {
@@ -51,6 +65,7 @@ impl ServiceBus {
             cancel_requested: Arc::new(AtomicBool::new(false)),
             last_navigation_error: Mutex::new(None),
             last_destination: Mutex::new(None),
+            navigation_diagnostics: Mutex::new(NavigationDiagnostics::default()),
         }
     }
 
@@ -69,11 +84,61 @@ impl ServiceBus {
     pub fn record_navigation_success(&self, destination: &str) {
         *self.last_destination.lock() = Some(destination.to_string());
         *self.last_navigation_error.lock() = None;
+        let mut diag = self.navigation_diagnostics.lock();
+        diag.current_destination = Some(destination.to_string());
+        diag.navigation_failure_reason = None;
+        diag.timeout_reason = None;
+    }
+
+    pub fn begin_navigation(&self, destination: &str, target_url: &str) {
+        let now = chrono::Utc::now().to_rfc3339();
+        let mut diag = self.navigation_diagnostics.lock();
+        diag.navigation_target = Some(target_url.to_string());
+        diag.current_destination = Some(destination.to_string());
+        diag.navigation_started_at = Some(now);
+        diag.navigation_completed_at = None;
+        diag.navigation_failure_reason = None;
+        diag.timeout_reason = None;
+    }
+
+    pub fn complete_navigation(&self, destination: &str, current_url: &str) {
+        let now = chrono::Utc::now().to_rfc3339();
+        let mut diag = self.navigation_diagnostics.lock();
+        diag.current_url = Some(current_url.to_string());
+        diag.last_successful_url = Some(current_url.to_string());
+        diag.current_destination = Some(destination.to_string());
+        diag.navigation_completed_at = Some(now);
+        diag.navigation_failure_reason = None;
+        diag.timeout_reason = None;
+    }
+
+    pub fn fail_navigation(&self, destination: &str, error: &str) {
+        let now = chrono::Utc::now().to_rfc3339();
+        let truncated = truncate_error(error);
+        let timeout_reason = if truncated.to_lowercase().contains("timeout") {
+            Some(truncated.clone())
+        } else {
+            None
+        };
+        let mut diag = self.navigation_diagnostics.lock();
+        diag.current_destination = Some(destination.to_string());
+        diag.navigation_completed_at = Some(now);
+        diag.navigation_failure_reason = Some(truncated.clone());
+        diag.timeout_reason = timeout_reason;
+    }
+
+    pub fn navigation_diagnostics(&self) -> NavigationDiagnostics {
+        self.navigation_diagnostics.lock().clone()
+    }
+
+    pub fn set_navigation_current_url(&self, url: Option<String>) {
+        self.navigation_diagnostics.lock().current_url = url;
     }
 
     pub fn record_navigation_error(&self, destination: &str, error: &str) {
         *self.last_destination.lock() = Some(destination.to_string());
         *self.last_navigation_error.lock() = Some(truncate_error(error));
+        self.fail_navigation(destination, error);
     }
 
     pub fn last_navigation_error(&self) -> Option<String> {
@@ -215,6 +280,24 @@ mod tests {
     fn service_kind_serializes_snake_case() {
         let json = serde_json::to_value(RuntimeServiceKind::Marketplace).unwrap();
         assert_eq!(json, "marketplace");
+    }
+
+    #[test]
+    fn navigation_diagnostics_track_success_and_failure() {
+        let bus = test_bus();
+        bus.begin_navigation("facebook_home", "https://www.facebook.com/");
+        bus.complete_navigation("facebook_home", "https://www.facebook.com/");
+        let diag = bus.navigation_diagnostics();
+        assert_eq!(
+            diag.last_successful_url.as_deref(),
+            Some("https://www.facebook.com/")
+        );
+        assert!(diag.navigation_started_at.is_some());
+        assert!(diag.navigation_completed_at.is_some());
+
+        bus.fail_navigation("marketplace", "Navigation timeout of 45000 ms exceeded");
+        let failed = bus.navigation_diagnostics();
+        assert_eq!(failed.timeout_reason.as_deref(), Some("Navigation timeout of 45000 ms exceeded"));
     }
 
     #[test]

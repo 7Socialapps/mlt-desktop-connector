@@ -7,8 +7,8 @@ mod sidecar;
 mod types;
 
 pub use facebook::{
-    parse_facebook_state, url_category, FacebookSessionSnapshot, FacebookSessionState,
-    SidecarFacebookDetection,
+    is_blank_page_url, parse_facebook_state, url_category, FacebookSessionSnapshot,
+    FacebookSessionState, SidecarFacebookDetection,
 };
 pub use manager::BrowserManager;
 pub use marketplace::{

@@ -2,7 +2,13 @@
  * Unit tests for navigation.mjs destination map (run: node navigation.test.mjs)
  */
 import assert from "node:assert/strict";
-import { destinationUrl, DESTINATIONS, detectRedirect } from "./navigation.mjs";
+import {
+  destinationUrl,
+  DESTINATIONS,
+  detectRedirect,
+  isBlankUrl,
+  POST_LAUNCH_NAVIGATION_TARGET,
+} from "./navigation.mjs";
 
 function testDestinationUrls() {
   assert.equal(destinationUrl("marketplace"), DESTINATIONS.marketplace);
@@ -43,7 +49,25 @@ function testRedirectDetection() {
   );
 }
 
+function testBlankUrlDetection() {
+  assert.equal(isBlankUrl("about:blank"), true);
+  assert.equal(isBlankUrl(""), true);
+  assert.equal(isBlankUrl(null), true);
+  assert.equal(isBlankUrl(undefined), true);
+  assert.equal(isBlankUrl("https://www.facebook.com/"), false);
+}
+
+function testPostLaunchNavigationTarget() {
+  assert.equal(POST_LAUNCH_NAVIGATION_TARGET, DESTINATIONS.facebook_home);
+  assert.equal(
+    destinationUrl("facebook_home"),
+    "https://www.facebook.com/",
+  );
+}
+
 testDestinationUrls();
 testUnknownDestination();
 testRedirectDetection();
+testBlankUrlDetection();
+testPostLaunchNavigationTarget();
 console.log("navigation.test.mjs: all tests passed");

@@ -78,6 +78,9 @@ impl NavigationService {
         self.bus.ensure_browser_ready(RuntimeServiceKind::Navigation)?;
 
         let dest_key = destination.sidecar_key();
+        let target_url = destination.url();
+        self.bus.begin_navigation(dest_key, target_url);
+
         let line = self.bus.sidecar_request(
             RuntimeServiceKind::Navigation,
             "navigate",
@@ -126,6 +129,13 @@ impl NavigationService {
             .get("redirect_detected")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
+
+        if let Some(url) = current_url.as_deref() {
+            self.bus.complete_navigation(dest_key, url);
+            self.bus
+                .browser_manager()
+                .update_active_page(url, page_title.as_deref());
+        }
 
         if redirect_detected {
             self.bus.record_navigation_error(

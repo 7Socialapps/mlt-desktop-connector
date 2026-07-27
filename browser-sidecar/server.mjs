@@ -278,13 +278,15 @@ async function handleLaunch(id) {
     }
     const pages = context.pages();
     page = pages.length > 0 ? pages[0] : await context.newPage();
-    if (page.url() === "about:blank") {
-      await page.goto("about:blank");
-    }
     browserState = "ready";
     profileState = "profile_ready";
     emitEvent("browser_ready", { pid: browserPid });
-    ok(id, { ...currentStatus(), launched: true });
+    ok(id, {
+      ...currentStatus(),
+      launched: true,
+      current_url: page.url(),
+      page_title: await page.title().catch(() => ""),
+    });
   } catch (err) {
     browserState = "stopped";
     browserPid = null;
@@ -520,6 +522,7 @@ async function handleOpenMarketplace(id, params = {}) {
   }
 
   const createVehicle = Boolean(params?.create_vehicle);
+  const skipNavigation = Boolean(params?.skip_navigation);
   const destination = createVehicle ? "marketplace_create_vehicle" : "marketplace";
   const targetUrl = destinationUrl(destination);
 
@@ -528,7 +531,9 @@ async function handleOpenMarketplace(id, params = {}) {
   });
 
   try {
-    await navigateWithRetry(page, targetUrl);
+    if (!skipNavigation) {
+      await navigateWithRetry(page, targetUrl);
+    }
     const evaluation = await evaluateMarketplaceState();
     const checked_at = new Date().toISOString();
     let screenshot_path = null;

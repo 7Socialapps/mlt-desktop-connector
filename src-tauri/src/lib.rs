@@ -121,7 +121,7 @@ fn get_browser_status(services: tauri::State<'_, AppServices>) -> BrowserManager
 fn browser_launch(
     services: tauri::State<'_, AppServices>,
 ) -> Result<BrowserManagerSnapshot, String> {
-    services.browser_manager.launch()
+    services.facebook_runtime.launch_browser()
 }
 
 #[tauri::command]
@@ -135,7 +135,7 @@ fn browser_stop(
 fn browser_restart(
     services: tauri::State<'_, AppServices>,
 ) -> Result<BrowserManagerSnapshot, String> {
-    services.browser_manager.restart()
+    services.facebook_runtime.restart_browser()
 }
 
 #[tauri::command]

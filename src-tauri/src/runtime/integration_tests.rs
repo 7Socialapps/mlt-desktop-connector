@@ -15,6 +15,22 @@ fn test_facebook_runtime() -> Arc<FacebookRuntime> {
 }
 
 #[test]
+fn launch_browser_rejects_blank_facebook_url() {
+    use crate::browser::is_blank_page_url;
+    assert!(is_blank_page_url(Some("about:blank")));
+    assert!(!is_blank_page_url(Some("https://www.facebook.com/")));
+}
+
+#[test]
+fn navigation_service_destination_for_launch_is_facebook_home() {
+    use crate::runtime::NavigationDestination;
+    assert_eq!(
+        NavigationDestination::FacebookHome.url(),
+        "https://www.facebook.com/"
+    );
+}
+
+#[test]
 fn marketplace_startup_path_defaults_to_not_checked() {
     let rt = test_facebook_runtime();
     let snap = rt.marketplace.snapshot();

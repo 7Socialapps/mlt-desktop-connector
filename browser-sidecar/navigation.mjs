@@ -51,6 +51,20 @@ export function destinationUrl(destination) {
   return DESTINATIONS[destination] ?? null;
 }
 
+/**
+ * @param {string | null | undefined} url
+ */
+export function isBlankUrl(url) {
+  if (!url || url === "about:blank") {
+    return true;
+  }
+  const lower = url.toLowerCase();
+  return lower === "chrome://newtab/" || lower === "about:newtab";
+}
+
+/** URL NavigationService should open after launch when the page is still blank. */
+export const POST_LAUNCH_NAVIGATION_TARGET = DESTINATIONS.facebook_home;
+
 
 /**
  * @param {import("playwright").Page} page

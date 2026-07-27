@@ -7,6 +7,7 @@ use crate::version::CONNECTOR_VERSION;
 
 use super::bus::ServiceBus;
 use super::session::FacebookSessionService;
+use super::navigation::NavigationService;
 use super::status::profile_version_from_path;
 
 /// Shared diagnostics snapshot — never includes cookies, tokens, or credentials.
@@ -25,6 +26,13 @@ pub struct DiagnosticsSnapshot {
     pub last_health_check_at: Option<String>,
     pub last_restart_at: Option<String>,
     pub last_navigation_error: Option<String>,
+    pub current_url: Option<String>,
+    pub navigation_target: Option<String>,
+    pub last_successful_url: Option<String>,
+    pub navigation_started_at: Option<String>,
+    pub navigation_completed_at: Option<String>,
+    pub navigation_failure_reason: Option<String>,
+    pub timeout_reason: Option<String>,
 }
 
 pub struct DiagnosticsService {
@@ -40,18 +48,23 @@ impl DiagnosticsService {
     pub fn snapshot(&self) -> DiagnosticsSnapshot {
         let browser = self.bus.browser_manager().snapshot();
         let session = self.session.snapshot();
+        let nav = self.bus.navigation_diagnostics();
 
         DiagnosticsSnapshot {
             browser_health: browser_health_label(browser.status),
             session_health: session.canonical_state(),
-            current_destination: self.bus.last_destination().or_else(|| {
-                browser
-                    .facebook_session
-                    .current_url
-                    .as_deref()
-                    .or(browser.active_page_url.as_deref())
-                    .map(|url| url_category(Some(url)).to_string())
-            }),
+            current_destination: nav
+                .current_destination
+                .clone()
+                .or_else(|| self.bus.last_destination())
+                .or_else(|| {
+                    browser
+                        .facebook_session
+                        .current_url
+                        .as_deref()
+                        .or(browser.active_page_url.as_deref())
+                        .map(|url| url_category(Some(url)).to_string())
+                }),
             current_service: self.bus.current_service_name(),
             browser_version: browser.playwright_version.clone(),
             connector_version: CONNECTOR_VERSION.to_string(),
@@ -62,7 +75,21 @@ impl DiagnosticsService {
                 .clone()
                 .or(session.checked_at.clone()),
             last_restart_at: browser.last_restart_at.clone(),
-            last_navigation_error: self.bus.last_navigation_error(),
+            last_navigation_error: self
+                .bus
+                .last_navigation_error()
+                .or(nav.navigation_failure_reason.clone()),
+            current_url: nav
+                .current_url
+                .clone()
+                .or(browser.active_page_url.clone())
+                .or(session.current_url.clone()),
+            navigation_target: nav.navigation_target.clone(),
+            last_successful_url: nav.last_successful_url.clone(),
+            navigation_started_at: nav.navigation_started_at.clone(),
+            navigation_completed_at: nav.navigation_completed_at.clone(),
+            navigation_failure_reason: nav.navigation_failure_reason.clone(),
+            timeout_reason: nav.timeout_reason.clone(),
         }
     }
 }
@@ -86,7 +113,8 @@ mod tests {
         let daemon = Arc::new(SidecarDaemon::new(PathBuf::new()));
         let manager = Arc::new(crate::browser::BrowserManager::new(runtime, daemon));
         let bus = Arc::new(ServiceBus::new(manager));
-        let session = Arc::new(FacebookSessionService::new(bus.clone()));
+        let navigation = Arc::new(NavigationService::new(bus.clone()));
+        let session = Arc::new(FacebookSessionService::new(bus.clone(), navigation));
         DiagnosticsService::new(bus, session)
     }
 
@@ -105,11 +133,12 @@ mod tests {
         let manager = Arc::new(crate::browser::BrowserManager::new(runtime, daemon));
         let bus = Arc::new(ServiceBus::new(manager));
         bus.record_navigation_error("messenger", "timeout");
-        let session = Arc::new(FacebookSessionService::new(bus.clone()));
+        let navigation = Arc::new(NavigationService::new(bus.clone()));
+        let session = Arc::new(FacebookSessionService::new(bus.clone(), navigation));
         let diag = DiagnosticsService::new(bus, session);
-        assert_eq!(
-            diag.snapshot().last_navigation_error.as_deref(),
-            Some("timeout")
-        );
+        let snap = diag.snapshot();
+        assert_eq!(snap.last_navigation_error.as_deref(), Some("timeout"));
+        assert_eq!(snap.navigation_failure_reason.as_deref(), Some("timeout"));
+        assert_eq!(snap.timeout_reason.as_deref(), Some("timeout"));
     }
 }

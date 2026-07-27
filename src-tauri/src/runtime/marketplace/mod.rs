@@ -6,7 +6,7 @@ use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
 use crate::browser::{
-    parse_marketplace_status, MarketplaceStatus, SidecarMarketplaceResult,
+    is_blank_page_url, parse_marketplace_status, MarketplaceStatus, SidecarMarketplaceResult,
 };
 
 use super::bus::{RuntimeServiceKind, ServiceBus};
@@ -204,10 +204,21 @@ impl MarketplaceService {
 
         self.bus.ensure_browser_ready(RuntimeServiceKind::Marketplace)?;
 
+        let nav = self.navigation.navigate_with_recovery(destination)?;
+        if is_blank_page_url(nav.current_url.as_deref()) {
+            return Err(format!(
+                "Marketplace navigation left browser on blank page (destination={})",
+                destination.sidecar_key()
+            ));
+        }
+
         let line = self.bus.sidecar_request(
             RuntimeServiceKind::Marketplace,
             "open_marketplace",
-            serde_json::json!({ "create_vehicle": create_vehicle }),
+            serde_json::json!({
+                "create_vehicle": create_vehicle,
+                "skip_navigation": true,
+            }),
             MARKETPLACE_TIMEOUT,
         )?;
 
@@ -221,7 +232,6 @@ impl MarketplaceService {
                 .unwrap_or_else(|| "Marketplace navigation failed".into()));
         }
 
-        let _ = destination;
         Ok(self.snapshot())
     }
 
@@ -266,8 +276,8 @@ mod tests {
         let daemon = Arc::new(SidecarDaemon::new(PathBuf::new()));
         let manager = Arc::new(crate::browser::BrowserManager::new(runtime, daemon));
         let bus = Arc::new(ServiceBus::new(manager));
-        let session = Arc::new(FacebookSessionService::new(bus.clone()));
         let navigation = Arc::new(NavigationService::new(bus.clone()));
+        let session = Arc::new(FacebookSessionService::new(bus.clone(), navigation.clone()));
         MarketplaceService::new(bus, session, navigation)
     }
 

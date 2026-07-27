@@ -8,7 +8,7 @@ pub mod recovery;
 pub mod session;
 pub mod status;
 
-pub use bus::{RuntimeServiceKind, ServiceBus};
+pub use bus::{NavigationDiagnostics, RuntimeServiceKind, ServiceBus};
 pub use diagnostics::{DiagnosticsService, DiagnosticsSnapshot};
 pub use marketplace::MarketplaceService;
 pub use messenger::{MessengerService, MessengerState};
@@ -26,7 +26,9 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 
 use crate::browser::BrowserManager;
+use crate::browser::BrowserManagerSnapshot;
 use crate::browser::SidecarDaemonLine;
+use crate::browser::is_blank_page_url;
 
 pub struct FacebookRuntime {
     pub bus: Arc<ServiceBus>,
@@ -43,8 +45,8 @@ pub struct FacebookRuntime {
 impl FacebookRuntime {
     pub fn new(browser_manager: Arc<BrowserManager>) -> Arc<Self> {
         let bus = Arc::new(ServiceBus::new(browser_manager));
-        let session = Arc::new(FacebookSessionService::new(bus.clone()));
         let navigation = Arc::new(NavigationService::new(bus.clone()));
+        let session = Arc::new(FacebookSessionService::new(bus.clone(), navigation.clone()));
         let marketplace = Arc::new(MarketplaceService::new(
             bus.clone(),
             session.clone(),
@@ -72,6 +74,35 @@ impl FacebookRuntime {
         });
 
         runtime
+    }
+
+    /// Launch Chromium, navigate to Facebook home, then detect session state.
+    pub fn launch_browser(&self) -> Result<BrowserManagerSnapshot, String> {
+        let manager = self.bus.browser_manager();
+        let launch = manager.launch()?;
+        if launch.status != crate::browser::BrowserRuntimeStatus::BrowserReady {
+            return Err("Browser failed to reach ready state".into());
+        }
+
+        let nav = self
+            .navigation
+            .navigate_with_recovery(NavigationDestination::FacebookHome)?;
+        if is_blank_page_url(nav.current_url.as_deref()) {
+            return Err("Browser stayed on about:blank — Facebook navigation did not complete".into());
+        }
+
+        self.session.check_session()?;
+        Ok(manager.get_status())
+    }
+
+    /// Restart Chromium and return to Facebook home with session detection.
+    pub fn restart_browser(&self) -> Result<BrowserManagerSnapshot, String> {
+        let manager = self.bus.browser_manager();
+        manager.restart()?;
+        self.navigation
+            .navigate_with_recovery(NavigationDestination::FacebookHome)?;
+        self.session.check_session()?;
+        Ok(manager.get_status())
     }
 
     pub fn aggregate_status(&self) -> FacebookRuntimeStatus {

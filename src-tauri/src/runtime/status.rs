@@ -38,6 +38,13 @@ pub struct FacebookRuntimeStatus {
     pub last_navigation_error: Option<String>,
     pub last_health_check_at: Option<String>,
     pub last_restart_at: Option<String>,
+    pub current_url: Option<String>,
+    pub navigation_target: Option<String>,
+    pub last_successful_url: Option<String>,
+    pub navigation_started_at: Option<String>,
+    pub navigation_completed_at: Option<String>,
+    pub navigation_failure_reason: Option<String>,
+    pub timeout_reason: Option<String>,
 }
 
 impl Default for FacebookRuntimeStatus {
@@ -66,6 +73,13 @@ impl Default for FacebookRuntimeStatus {
             last_navigation_error: None,
             last_health_check_at: None,
             last_restart_at: None,
+            current_url: None,
+            navigation_target: None,
+            last_successful_url: None,
+            navigation_started_at: None,
+            navigation_completed_at: None,
+            navigation_failure_reason: None,
+            timeout_reason: None,
         }
     }
 }
@@ -171,6 +185,13 @@ impl FacebookRuntimeStatus {
             last_navigation_error: diagnostics.last_navigation_error.clone(),
             last_health_check_at: diagnostics.last_health_check_at.clone(),
             last_restart_at: diagnostics.last_restart_at.clone(),
+            current_url: diagnostics.current_url.clone(),
+            navigation_target: diagnostics.navigation_target.clone(),
+            last_successful_url: diagnostics.last_successful_url.clone(),
+            navigation_started_at: diagnostics.navigation_started_at.clone(),
+            navigation_completed_at: diagnostics.navigation_completed_at.clone(),
+            navigation_failure_reason: diagnostics.navigation_failure_reason.clone(),
+            timeout_reason: diagnostics.timeout_reason.clone(),
         }
     }
 }
@@ -233,6 +254,13 @@ mod tests {
                 last_health_check_at: None,
                 last_restart_at: None,
                 last_navigation_error: None,
+                current_url: Some("https://www.facebook.com/marketplace/".into()),
+                navigation_target: Some("https://www.facebook.com/marketplace/".into()),
+                last_successful_url: Some("https://www.facebook.com/marketplace/".into()),
+                navigation_started_at: None,
+                navigation_completed_at: None,
+                navigation_failure_reason: None,
+                timeout_reason: None,
             },
             "browser_ready".into(),
             "marketplace_ready".into(),

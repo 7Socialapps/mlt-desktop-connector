@@ -120,6 +120,11 @@ pub fn apply_detection(snapshot: &mut FacebookSessionSnapshot, raw: &SidecarFace
     snapshot.reason_code = Some(raw.reason_code.clone());
 }
 
+/// True when the browser has not loaded a real destination yet.
+pub fn is_blank_page_url(url: Option<&str>) -> bool {
+    matches!(url_category(url), "blank" | "unknown")
+}
+
 /// Category for heartbeat — never sends full URL.
 pub fn url_category(url: Option<&str>) -> &'static str {
     let Some(url) = url else {
@@ -187,6 +192,13 @@ mod tests {
         assert_eq!(snap.state, FacebookSessionState::FacebookLoggedIn);
         assert!(snap.marketplace_accessible);
         assert_eq!(snap.reason_code.as_deref(), Some("nav_present"));
+    }
+
+    #[test]
+    fn blank_page_url_is_detected() {
+        assert!(is_blank_page_url(Some("about:blank")));
+        assert!(is_blank_page_url(None));
+        assert!(!is_blank_page_url(Some("https://www.facebook.com/")));
     }
 
     #[test]

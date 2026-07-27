@@ -6,10 +6,11 @@ use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
 use crate::browser::{
-    parse_facebook_state, FacebookSessionState, SidecarFacebookDetection,
+    is_blank_page_url, parse_facebook_state, FacebookSessionState, SidecarFacebookDetection,
 };
 
 use super::bus::{RuntimeServiceKind, ServiceBus};
+use super::navigation::{NavigationDestination, NavigationService};
 
 const SESSION_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -70,13 +71,15 @@ pub fn canonical_session_state(state: &FacebookSessionState) -> String {
 
 pub struct FacebookSessionService {
     bus: Arc<ServiceBus>,
+    navigation: Arc<NavigationService>,
     snapshot: Arc<Mutex<SessionSnapshot>>,
 }
 
 impl FacebookSessionService {
-    pub fn new(bus: Arc<ServiceBus>) -> Self {
+    pub fn new(bus: Arc<ServiceBus>, navigation: Arc<NavigationService>) -> Self {
         Self {
             bus,
+            navigation,
             snapshot: Arc::new(Mutex::new(SessionSnapshot::default())),
         }
     }
@@ -101,6 +104,8 @@ impl FacebookSessionService {
             return Ok(self.snapshot());
         }
 
+        self.ensure_on_facebook()?;
+
         let line = self.bus.sidecar_request(
             RuntimeServiceKind::Session,
             "detect_facebook_session",
@@ -113,6 +118,33 @@ impl FacebookSessionService {
         }
 
         Ok(self.snapshot())
+    }
+
+    fn ensure_on_facebook(&self) -> Result<(), String> {
+        let current_url = self.current_page_url()?;
+        if is_blank_page_url(current_url.as_deref()) {
+            let nav = self
+                .navigation
+                .navigate_with_recovery(NavigationDestination::FacebookHome)?;
+            if is_blank_page_url(nav.current_url.as_deref()) {
+                return Err("Browser stayed on a blank page after navigating to Facebook".into());
+            }
+        }
+        Ok(())
+    }
+
+    fn current_page_url(&self) -> Result<Option<String>, String> {
+        let browser = self.bus.browser_manager().snapshot();
+        if let Some(url) = browser.active_page_url {
+            return Ok(Some(url));
+        }
+        if let Some(url) = browser.facebook_session.current_url {
+            return Ok(Some(url));
+        }
+        match self.bus.browser_manager().get_active_page() {
+            Ok(page) => Ok(Some(page.url)),
+            Err(_) => Ok(None),
+        }
     }
 
     fn apply_sidecar_result(&self, result: serde_json::Value) -> Result<(), String> {
@@ -176,7 +208,8 @@ mod tests {
         let daemon = Arc::new(SidecarDaemon::new(PathBuf::new()));
         let manager = Arc::new(crate::browser::BrowserManager::new(runtime, daemon));
         let bus = Arc::new(ServiceBus::new(manager));
-        FacebookSessionService::new(bus)
+        let navigation = Arc::new(crate::runtime::NavigationService::new(bus.clone()));
+        FacebookSessionService::new(bus, navigation)
     }
 
     #[test]
@@ -229,6 +262,13 @@ mod tests {
             canonical_session_state(&FacebookSessionState::FacebookNotChecked),
             "unknown"
         );
+    }
+
+    #[test]
+    fn blank_page_url_detected_for_preflight() {
+        assert!(is_blank_page_url(Some("about:blank")));
+        assert!(is_blank_page_url(None));
+        assert!(!is_blank_page_url(Some("https://www.facebook.com/")));
     }
 
     #[test]

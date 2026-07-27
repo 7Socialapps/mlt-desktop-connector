@@ -115,6 +115,15 @@ impl BrowserManager {
         self.state.lock().last_restart_at = Some(Utc::now().to_rfc3339());
     }
 
+    pub fn update_active_page(&self, url: &str, title: Option<&str>) {
+        let mut guard = self.state.lock();
+        guard.active_page_url = Some(url.to_string());
+        if let Some(title) = title {
+            guard.active_page_title = Some(title.to_string());
+        }
+        self.emit_changed();
+    }
+
     pub fn update_facebook_session(
         &self,
         state: FacebookSessionState,
@@ -574,6 +583,14 @@ impl BrowserManager {
         {
             Ok(line) => {
                 if let Some(result) = line.result {
+                    let current_url = result
+                        .get("current_url")
+                        .and_then(|v| v.as_str())
+                        .map(String::from);
+                    let page_title = result
+                        .get("page_title")
+                        .and_then(|v| v.as_str())
+                        .map(String::from);
                     if let Ok(sidecar_status) =
                         serde_json::from_value::<SidecarStatusResult>(result)
                     {
@@ -584,6 +601,12 @@ impl BrowserManager {
                             if auto {
                                 guard.restart_attempts = 0;
                             }
+                        }
+                        if let Some(url) = current_url {
+                            guard.active_page_url = Some(url);
+                        }
+                        if let Some(title) = page_title {
+                            guard.active_page_title = Some(title);
                         }
                     } else {
                         self.set_status(BrowserRuntimeStatus::BrowserReady);
