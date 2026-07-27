@@ -63,6 +63,15 @@ interface BrowserManagerSnapshot {
   marketplace: MarketplaceSnapshot;
 }
 
+interface RuntimeStatus {
+  browser_state: string;
+  facebook_session_state: string;
+  marketplace_state: string;
+  current_destination: string | null;
+  current_service: string | null;
+  last_navigation_error: string | null;
+}
+
 interface ConnectionCheck {
   id: string;
   status: string;
@@ -118,6 +127,7 @@ function render(
   status: ConnectorStatus,
   pairing: PairingState,
   browser: BrowserManagerSnapshot,
+  runtime: RuntimeStatus,
 ) {
   const displayError = pairing.error ?? pairingActionError;
   const remediation = remediationForBrowser(browser);
@@ -131,10 +141,12 @@ function render(
     !actionInProgress;
   const canFacebookLogin = browserReady && !actionInProgress;
   const canMarketplace = browserReady && !actionInProgress;
+  const canVehicleCreate = browserReady && !actionInProgress;
   const canRestart =
     browser.sidecar_running && browser.chromium_installed && !browserBusy;
   const canResetProfile = !browserReady && !browserBusy;
   const canReconnect = status.needs_reconnect || !status.paired;
+  const canCancelOperation = Boolean(actionInProgress);
 
   app.innerHTML = `
     <main class="status-window">
@@ -162,14 +174,17 @@ function render(
       </dl>
 
       <section class="browser-section">
-        <h2>Browser</h2>
+        <h2>Browser & Runtime</h2>
         ${actionInProgress ? `<p class="helper progress" role="status">Working: ${labelize(actionInProgress)}…</p>` : ""}
         <dl>
-          <div><dt>Browser</dt><dd><span class="badge badge-browser-${browser.status}">${labelize(browser.status)}</span></dd></div>
+          <div><dt>Browser</dt><dd><span class="badge badge-browser-${browser.status}">${labelize(runtime.browser_state)}</span></dd></div>
+          <div><dt>Facebook Session</dt><dd>${labelize(runtime.facebook_session_state)}</dd></div>
+          <div><dt>Marketplace</dt><dd>${labelize(runtime.marketplace_state)}</dd></div>
+          <div><dt>Current Destination</dt><dd>${runtime.current_destination ? labelize(runtime.current_destination) : "—"}</dd></div>
+          <div><dt>Current Service</dt><dd>${runtime.current_service ? labelize(runtime.current_service) : "—"}</dd></div>
+          <div><dt>Last Navigation Error</dt><dd>${runtime.last_navigation_error ?? "—"}</dd></div>
           <div><dt>Chromium</dt><dd>${browser.chromium_installed ? (browser.playwright_version ?? "available") : "not installed"}</dd></div>
           <div><dt>Profile</dt><dd>${labelize(browser.profile_status)}</dd></div>
-          <div><dt>Facebook</dt><dd>${labelize(browser.facebook_session.state)}</dd></div>
-          <div><dt>Marketplace</dt><dd>${labelize(browser.marketplace.status)}</dd></div>
           <div><dt>Last browser error</dt><dd>${browser.last_error_code ?? browser.last_error ?? "—"}</dd></div>
           <div><dt>Sidecar</dt><dd>${browser.sidecar_running ? "running" : "stopped"}</dd></div>
           <div><dt>Last health check</dt><dd>${browser.last_health_check_at ?? "—"}</dd></div>
@@ -191,9 +206,13 @@ function render(
         }
         <div class="button-row">
           <button id="launch-browser" ${canLaunch ? "" : "disabled"}>Launch Browser</button>
+          <button id="check-facebook-session" ${canFacebookLogin ? "" : "disabled"}>Check Facebook Session</button>
           <button id="open-facebook-login" ${canFacebookLogin ? "" : "disabled"}>Open Facebook Login</button>
           <button id="open-marketplace" ${canMarketplace ? "" : "disabled"}>Open Marketplace</button>
+          <button id="open-vehicle-create" ${canVehicleCreate ? "" : "disabled"}>Open Vehicle Create Form</button>
+          <button id="cancel-operation" ${canCancelOperation ? "" : "disabled"}>Cancel Current Operation</button>
           <button id="restart-browser" ${canRestart ? "" : "disabled"}>Restart Browser</button>
+          <button id="run-runtime-diagnostics" ${actionInProgress ? "disabled" : ""}>Run Runtime Diagnostics</button>
           <button id="run-diagnostics" ${actionInProgress ? "disabled" : ""}>Run Diagnostics</button>
           <button id="open-log-folder">Open Log Folder</button>
           <button id="reset-profile" ${canResetProfile ? "" : "disabled"}>Reset Browser Profile</button>
@@ -252,9 +271,13 @@ function bindActions(
 ) {
   document.querySelector("#start-pairing")?.addEventListener("click", () => void startPairing());
   document.querySelector("#launch-browser")?.addEventListener("click", () => void launchBrowser());
+  document.querySelector("#check-facebook-session")?.addEventListener("click", () => void checkFacebookSession());
   document.querySelector("#open-facebook-login")?.addEventListener("click", () => void openFacebookLogin());
   document.querySelector("#open-marketplace")?.addEventListener("click", () => void openMarketplace());
+  document.querySelector("#open-vehicle-create")?.addEventListener("click", () => void openVehicleCreate());
+  document.querySelector("#cancel-operation")?.addEventListener("click", () => void cancelOperation());
   document.querySelector("#restart-browser")?.addEventListener("click", () => void restartBrowser());
+  document.querySelector("#run-runtime-diagnostics")?.addEventListener("click", () => void runRuntimeDiagnostics());
   document.querySelector("#run-diagnostics")?.addEventListener("click", () => void runDiagnostics());
   document.querySelector("#open-log-folder")?.addEventListener("click", () => void openLogFolder());
   document.querySelector("#reset-profile")?.addEventListener("click", () => void resetProfile());
@@ -295,6 +318,16 @@ async function launchBrowser() {
   });
 }
 
+async function checkFacebookSession() {
+  await withAction("check_facebook_session", async () => {
+    try {
+      await invoke<BrowserManagerSnapshot>("browser_detect_facebook_session");
+    } catch (err) {
+      browserActionError = err instanceof Error ? err.message : String(err);
+    }
+  });
+}
+
 async function openFacebookLogin() {
   await withAction("open_facebook_login", async () => {
     try {
@@ -315,10 +348,40 @@ async function openMarketplace() {
   });
 }
 
+async function openVehicleCreate() {
+  await withAction("open_vehicle_create", async () => {
+    try {
+      await invoke<BrowserManagerSnapshot>("browser_open_vehicle_create");
+    } catch (err) {
+      browserActionError = err instanceof Error ? err.message : String(err);
+    }
+  });
+}
+
+async function cancelOperation() {
+  await withAction("cancel_operation", async () => {
+    try {
+      await invoke("runtime_cancel_operation");
+    } catch (err) {
+      browserActionError = err instanceof Error ? err.message : String(err);
+    }
+  });
+}
+
 async function restartBrowser() {
   await withAction("restart_browser", async () => {
     try {
       await invoke<BrowserManagerSnapshot>("browser_restart");
+    } catch (err) {
+      browserActionError = err instanceof Error ? err.message : String(err);
+    }
+  });
+}
+
+async function runRuntimeDiagnostics() {
+  await withAction("runtime_diagnostics", async () => {
+    try {
+      await invoke("runtime_diagnostics_snapshot");
     } catch (err) {
       browserActionError = err instanceof Error ? err.message : String(err);
     }
@@ -369,21 +432,23 @@ async function reconnectDevice() {
 }
 
 async function refreshWith(pairing: PairingState) {
-  const [status, browser] = await Promise.all([
+  const [status, browser, runtime] = await Promise.all([
     invoke<ConnectorStatus>("get_status"),
     invoke<BrowserManagerSnapshot>("get_browser_status"),
+    invoke<RuntimeStatus>("runtime_status"),
   ]);
-  render(status, pairing, browser);
+  render(status, pairing, browser, runtime);
 }
 
 async function refresh() {
   try {
-    const [status, pairing, browser] = await Promise.all([
+    const [status, pairing, browser, runtime] = await Promise.all([
       invoke<ConnectorStatus>("get_status"),
       invoke<PairingState>("get_pairing_state"),
       invoke<BrowserManagerSnapshot>("get_browser_status"),
+      invoke<RuntimeStatus>("runtime_status"),
     ]);
-    render(status, pairing, browser);
+    render(status, pairing, browser, runtime);
   } catch (err) {
     app.innerHTML = `<p class="error">Failed to load status: ${String(err)}</p>`;
   }

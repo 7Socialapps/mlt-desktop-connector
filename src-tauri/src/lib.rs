@@ -37,6 +37,7 @@ use browser::{
     BrowserActivePage, BrowserManagerSnapshot, BrowserRuntimeService, BrowserRuntimeSnapshot,
 };
 use runtime::FacebookRuntime;
+use runtime::DiagnosticsSnapshot;
 
 use state::{AppState, ConnectionState};
 
@@ -187,6 +188,36 @@ fn browser_profile_status(
     services: tauri::State<'_, AppServices>,
 ) -> Result<BrowserManagerSnapshot, String> {
     services.browser_manager.profile_status()
+}
+
+#[tauri::command]
+fn browser_open_vehicle_create(
+    services: tauri::State<'_, AppServices>,
+) -> Result<BrowserManagerSnapshot, String> {
+    services
+        .facebook_runtime
+        .marketplace
+        .open_vehicle_create_route()
+        .map_err(|e| e.to_string())?;
+    Ok(services.browser_manager.get_status())
+}
+
+#[tauri::command]
+fn runtime_cancel_operation(services: tauri::State<'_, AppServices>) -> Result<(), String> {
+    services.facebook_runtime.bus.request_cancel();
+    Ok(())
+}
+
+#[tauri::command]
+fn runtime_diagnostics_snapshot(
+    services: tauri::State<'_, AppServices>,
+) -> Result<DiagnosticsSnapshot, String> {
+    Ok(services.facebook_runtime.diagnostics.snapshot())
+}
+
+#[tauri::command]
+fn runtime_status(services: tauri::State<'_, AppServices>) -> runtime::FacebookRuntimeStatus {
+    services.facebook_runtime.aggregate_status()
 }
 
 #[tauri::command]
@@ -347,6 +378,7 @@ pub fn run() {
                 app.handle().clone(),
                 state.clone(),
                 api_client.clone(),
+                facebook_runtime.clone(),
             );
             let pairing = Arc::new(PairingCoordinator::new(
                 app.handle().clone(),
@@ -483,7 +515,11 @@ pub fn run() {
             browser_get_active_page,
             browser_open_facebook_login,
             browser_open_marketplace,
+            browser_open_vehicle_create,
             browser_detect_facebook_session,
+            runtime_cancel_operation,
+            runtime_diagnostics_snapshot,
+            runtime_status,
             browser_reset_profile,
             browser_profile_status,
             run_connection_tests_cmd,
