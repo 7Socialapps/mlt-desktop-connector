@@ -25,14 +25,20 @@ Local desktop agent for MLT Web Poster. Runs in the system tray, maintains a per
 
 ### Selected approach: browser-based pairing with one-time code
 
-**Proposed actions (backend Milestone B):**
+**Preferred flow (dashboard generates code):**
 
-1. Desktop calls `create_pairing_code` with `deviceId`, `connectorVersion`, `os`, `capabilities`.
-2. Backend returns a short-lived alphanumeric code (e.g. 8 chars, 10-minute TTL).
-3. User signs into the MLT dashboard (existing Neon JWT session — same auth as the rest of MLT).
-4. Dashboard Web Poster setup UI displays an "Enter pairing code" field and calls `exchange_pairing_code` with the code + authenticated user's `userId` / `dealershipId`.
-5. Backend validates the code, binds the device to the user/dealership, issues `accessToken` + `refreshToken`, and invalidates the code.
-6. Desktop polls `exchange_pairing_code` **or** receives tokens via a desktop-local callback URL (optional enhancement) — initial implementation can poll with the code until paired.
+1. Desktop opens the MLT dashboard in the system browser (`tauri-plugin-shell`).
+2. Super admin signs in with the existing Neon web login.
+3. Dashboard calls proposed `create_pairing_code` (super-admin Neon session) and displays a short-lived code.
+4. User enters that code in the desktop app (or desktop reads it via a secure local handoff — not URL token exposure).
+5. Desktop calls proposed `exchange_pairing_code` with `deviceId`, code, and connector metadata.
+6. Backend validates the code, binds device → user/dealership, returns `accessToken` + `refreshToken`; desktop stores tokens in OS keychain.
+
+**Alternative flow (desktop displays code):**
+
+1. Desktop calls proposed `create_pairing_code` and shows an alphanumeric code in the status window.
+2. Super admin signs into the dashboard and calls proposed `approve_pairing_code` with that code.
+3. Desktop receives tokens via proposed `exchange_pairing_code` using a single completion request — **not** repeated insecure polling.
 
 **Why not embed Neon login in the desktop app?**
 
