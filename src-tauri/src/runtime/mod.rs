@@ -105,6 +105,12 @@ impl FacebookRuntime {
         Ok(manager.get_status())
     }
 
+    /// Open Facebook login page for manual sign-in (no credential storage).
+    pub fn open_facebook_login(&self) -> Result<BrowserManagerSnapshot, String> {
+        self.session.open_login_page()?;
+        Ok(self.bus.browser_manager().get_status())
+    }
+
     pub fn aggregate_status(&self) -> FacebookRuntimeStatus {
         let diag = self.diagnostics.snapshot();
         let status = FacebookRuntimeStatus::aggregate(

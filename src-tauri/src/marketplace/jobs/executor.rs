@@ -6,7 +6,7 @@ use tracing::{info, warn};
 use crate::api::types::FailJobRequest;
 use crate::api::ConnectorApiClient;
 use crate::marketplace::payload::VehicleJobPayload;
-use crate::marketplace::{download_job_assets, AssetError};
+use crate::marketplace::{download_job_assets, vehicle_fill_payload_from_job, AssetError};
 use crate::runtime::FacebookRuntime;
 
 use super::errors::{JobErrorCode, JobExecutionError};
@@ -14,14 +14,28 @@ use super::evidence::store_job_screenshot;
 use super::phases::JobPhase;
 use super::progress::update_status;
 use super::session_precheck::{session_error_code, session_error_message};
+use super::tracker::JobProgressTracker;
 
 pub struct PrepareForReviewExecutor {
     runtime: Arc<FacebookRuntime>,
+    progress: Option<JobProgressTracker>,
 }
 
 impl PrepareForReviewExecutor {
     pub fn new(runtime: Arc<FacebookRuntime>) -> Self {
-        Self { runtime }
+        Self {
+            runtime,
+            progress: None,
+        }
+    }
+
+    pub fn with_progress_tracker(mut self, tracker: JobProgressTracker) -> Self {
+        self.progress = Some(tracker);
+        self
+    }
+
+    fn tracker(&self) -> Option<&JobProgressTracker> {
+        self.progress.as_ref()
     }
 
     pub async fn execute(
@@ -60,6 +74,7 @@ impl PrepareForReviewExecutor {
             JobPhase::PreparingAssets,
             None,
             Some(&self.runtime),
+            self.tracker(),
         )
         .await
         .map_err(|e| {
@@ -76,9 +91,12 @@ impl PrepareForReviewExecutor {
             "prepare_for_review — downloading listing photos"
         );
 
-        let (_manifest, workspace) = download_job_assets(app, payload)
+        let (manifest, workspace) = download_job_assets(app, payload)
             .await
             .map_err(|err| asset_error_to_job_error(err, JobPhase::PreparingAssets))?;
+
+        let image_count = manifest.images.len() as u32;
+        let fill_payload = vehicle_fill_payload_from_job(payload);
 
         self.check_cancelled(JobPhase::PreparingAssets)?;
 
@@ -89,6 +107,7 @@ impl PrepareForReviewExecutor {
             JobPhase::StartingRuntime,
             Some("Listing photos prepared; starting browser runtime"),
             Some(&self.runtime),
+            self.tracker(),
         )
         .await
         .map_err(|e| {
@@ -119,6 +138,7 @@ impl PrepareForReviewExecutor {
             JobPhase::CheckingFacebookSession,
             None,
             Some(&self.runtime),
+            self.tracker(),
         )
         .await
         .map_err(|e| {
@@ -159,6 +179,7 @@ impl PrepareForReviewExecutor {
             JobPhase::OpeningMarketplace,
             None,
             Some(&self.runtime),
+            self.tracker(),
         )
         .await
         .map_err(|e| {
@@ -206,6 +227,7 @@ impl PrepareForReviewExecutor {
             JobPhase::OpeningVehicleCreate,
             None,
             Some(&self.runtime),
+            self.tracker(),
         )
         .await
         .map_err(|e| {
@@ -237,6 +259,7 @@ impl PrepareForReviewExecutor {
             JobPhase::VerifyingVehicleCreate,
             None,
             Some(&self.runtime),
+            self.tracker(),
         )
         .await
         .map_err(|e| {
@@ -277,28 +300,173 @@ impl PrepareForReviewExecutor {
             let _ = store_job_screenshot(app, job_id, screenshot, "create-route");
         }
 
-        let _ = workspace.cleanup();
-
         self.check_cancelled(JobPhase::VerifyingVehicleCreate)?;
 
         update_status(
             client,
             scoped,
             job_id,
-            JobPhase::CreateRouteReady,
-            Some("Vehicle create route validated — ready for dealer review"),
+            JobPhase::UploadingImages,
+            Some(&format!("Uploading {image_count} listing photos")),
             Some(&self.runtime),
+            self.tracker(),
         )
         .await
         .map_err(|e| {
             JobExecutionError::new(
                 JobErrorCode::RuntimeError,
                 e,
-                JobPhase::CreateRouteReady,
+                JobPhase::UploadingImages,
             )
         })?;
 
-        info!(job_id, "prepare_for_review — create route ready (M3.3 terminal success)");
+        let upload_report = if image_count > 0 {
+            self.runtime
+                .marketplace
+                .upload_vehicle_images(&manifest.images, workspace.path())
+                .map_err(|e| {
+                    JobExecutionError::new(
+                        JobErrorCode::ImageUploadFailed,
+                        e,
+                        JobPhase::UploadingImages,
+                    )
+                })?
+        } else {
+            crate::marketplace::form::ImageUploadReport {
+                uploaded: vec![],
+                thumbnail_count: 0,
+                expected_count: 0,
+                primary_preserved: true,
+            }
+        };
+
+        if image_count > 0 && !upload_report.primary_preserved {
+            return Err(JobExecutionError::new(
+                JobErrorCode::ImageUploadFailed,
+                format!(
+                    "Primary image not uploaded (thumbnails={}, expected={})",
+                    upload_report.thumbnail_count, upload_report.expected_count
+                ),
+                JobPhase::UploadingImages,
+            ));
+        }
+
+        self.check_cancelled(JobPhase::UploadingImages)?;
+
+        update_status(
+            client,
+            scoped,
+            job_id,
+            JobPhase::FillingFields,
+            None,
+            Some(&self.runtime),
+            self.tracker(),
+        )
+        .await
+        .map_err(|e| {
+            JobExecutionError::new(JobErrorCode::RuntimeError, e, JobPhase::FillingFields)
+        })?;
+
+        let fill_report = self
+            .runtime
+            .marketplace
+            .fill_vehicle_form(&fill_payload)
+            .map_err(|e| {
+                JobExecutionError::new(JobErrorCode::FormFillFailed, e, JobPhase::FillingFields)
+            })?;
+
+        let required_failures = fill_report.required_failures();
+        if !required_failures.is_empty() {
+            return Err(JobExecutionError::new(
+                JobErrorCode::FormFillFailed,
+                format!("Required fields failed: {}", required_failures.join(", ")),
+                JobPhase::FillingFields,
+            ));
+        }
+
+        self.check_cancelled(JobPhase::FillingFields)?;
+
+        update_status(
+            client,
+            scoped,
+            job_id,
+            JobPhase::VerifyingFields,
+            None,
+            Some(&self.runtime),
+            self.tracker(),
+        )
+        .await
+        .map_err(|e| {
+            JobExecutionError::new(JobErrorCode::RuntimeError, e, JobPhase::VerifyingFields)
+        })?;
+
+        let form_verification = self
+            .runtime
+            .marketplace
+            .verify_filled_form(&fill_payload, image_count)
+            .map_err(|e| {
+                JobExecutionError::new(
+                    JobErrorCode::FormVerificationFailed,
+                    e,
+                    JobPhase::VerifyingFields,
+                )
+            })?;
+
+        if !form_verification.ready {
+            return Err(
+                JobExecutionError::new(
+                    JobErrorCode::FormVerificationFailed,
+                    format!(
+                        "Form verification failed (reason={}, missing={:?})",
+                        form_verification.reason_code, form_verification.fields_missing
+                    ),
+                    JobPhase::VerifyingFields,
+                )
+                .with_screenshot(form_verification.screenshot_path.clone()),
+            );
+        }
+
+        if let Some(ref screenshot) = form_verification.screenshot_path {
+            let _ = store_job_screenshot(app, job_id, screenshot, "form-verified");
+        }
+
+        let _ = workspace.cleanup();
+
+        self.check_cancelled(JobPhase::VerifyingFields)?;
+
+        let verification_summary = format!(
+            "filled={}, images={}/{}, next={}, publish={}",
+            fill_report.filled.len(),
+            form_verification.image_count,
+            form_verification.expected_image_count,
+            form_verification.has_next_button,
+            form_verification.has_publish_button
+        );
+
+        update_status(
+            client,
+            scoped,
+            job_id,
+            JobPhase::ReadyForReview,
+            Some(&format!(
+                "Listing prepared. Review the Facebook form and publish manually. ({verification_summary})"
+            )),
+            Some(&self.runtime),
+            self.tracker(),
+        )
+        .await
+        .map_err(|e| {
+            JobExecutionError::new(JobErrorCode::RuntimeError, e, JobPhase::ReadyForReview)
+        })?;
+
+        let _ = self.runtime.marketplace.bring_browser_forward();
+
+        info!(
+            job_id,
+            filled = fill_report.filled.len(),
+            images = upload_report.thumbnail_count,
+            "prepare_for_review — ready_for_review (human review mode)"
+        );
         self.runtime.bus.clear_cancel();
         Ok(())
     }
@@ -332,6 +500,7 @@ impl PrepareForReviewExecutor {
             err.phase,
             Some(&err.message),
             Some(&self.runtime),
+            self.tracker(),
         )
         .await;
 

@@ -13,6 +13,7 @@ use crate::api::types::{
 use crate::api::ConnectorApiClient;
 use crate::credentials::{ensure_access_token, has_access_token, is_paired, load_credentials};
 use crate::marketplace::jobs::PrepareForReviewExecutor;
+use crate::marketplace::jobs::JobProgressTracker;
 use crate::marketplace::payload::{
     reject_unsupported_execution_mode, validate_and_normalize, ExecutionMode, VehicleJobPayload,
 };
@@ -26,6 +27,7 @@ pub struct PollingService {
     shutdown: Arc<AtomicBool>,
     busy: Arc<AtomicBool>,
     active_job_id: Arc<Mutex<Option<String>>>,
+    job_progress: JobProgressTracker,
 }
 
 impl PollingService {
@@ -40,12 +42,14 @@ impl PollingService {
             shutdown: Arc::new(AtomicBool::new(false)),
             busy: Arc::new(AtomicBool::new(false)),
             active_job_id: Arc::new(Mutex::new(None)),
+            job_progress: JobProgressTracker::new(),
         });
 
         let enabled_flag = service.enabled.clone();
         let shutdown_flag = service.shutdown.clone();
         let busy_flag = service.busy.clone();
         let active_job_id = service.active_job_id.clone();
+        let job_progress_for_loop = service.job_progress.clone();
 
         tauri::async_runtime::spawn(async move {
             let app_handle = app.clone();
@@ -72,6 +76,7 @@ impl PollingService {
                     busy_flag.clone(),
                     active_job_id.clone(),
                     facebook_runtime.clone(),
+                    job_progress_for_loop.clone(),
                 )
                 .await
                 {
@@ -104,6 +109,14 @@ impl PollingService {
     pub fn active_job_id(&self) -> Option<String> {
         self.active_job_id.lock().clone()
     }
+
+    pub fn job_progress(&self) -> Option<crate::marketplace::jobs::JobProgressSnapshot> {
+        self.job_progress.snapshot()
+    }
+
+    pub fn job_progress_tracker(&self) -> JobProgressTracker {
+        self.job_progress.clone()
+    }
 }
 
 pub fn enable_polling_if_authenticated(polling: &PollingService, state: &mut AppState) {
@@ -122,6 +135,7 @@ async fn poll_and_process(
     busy: Arc<AtomicBool>,
     active_job_id: Arc<Mutex<Option<String>>>,
     facebook_runtime: Arc<FacebookRuntime>,
+    job_progress: JobProgressTracker,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     if !has_access_token() {
         if !ensure_access_token(client).await? {
@@ -186,9 +200,11 @@ async fn poll_and_process(
         &device_id,
         &job.id,
         facebook_runtime,
+        job_progress.clone(),
     )
     .await;
     busy.store(false, Ordering::SeqCst);
+    job_progress.clear();
     {
         let mut guard = active_job_id.lock();
         *guard = None;
@@ -207,6 +223,7 @@ async fn process_job(
     device_id: &str,
     job_id: &str,
     facebook_runtime: Arc<FacebookRuntime>,
+    job_progress: JobProgressTracker,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     info!(job_id, "job started — claiming via transport layer");
 
@@ -294,7 +311,8 @@ async fn process_job(
     }
 
     if matches!(payload.execution_mode, ExecutionMode::PrepareForReview) {
-        let executor = PrepareForReviewExecutor::new(facebook_runtime);
+        let executor = PrepareForReviewExecutor::new(facebook_runtime)
+            .with_progress_tracker(job_progress);
         return executor
             .execute(app, client, job_id, &scoped, &payload)
             .await;
@@ -429,6 +447,7 @@ mod tests {
             shutdown: Arc::new(AtomicBool::new(false)),
             busy: Arc::new(AtomicBool::new(false)),
             active_job_id: Arc::new(Mutex::new(Some("job-123".into()))),
+            job_progress: JobProgressTracker::new(),
         });
         assert_eq!(service.active_job_id().as_deref(), Some("job-123"));
     }

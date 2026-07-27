@@ -120,6 +120,39 @@ impl FacebookSessionService {
         Ok(self.snapshot())
     }
 
+    /// Navigate to Facebook login/home for manual sign-in. Does not store credentials.
+    pub fn open_login_page(&self) -> Result<SessionSnapshot, String> {
+        self.bus.ensure_browser_ready(RuntimeServiceKind::Session)?;
+
+        {
+            let mut snap = self.snapshot.lock();
+            snap.state = FacebookSessionState::FacebookLoginInProgress;
+            snap.checked_at = Some(Utc::now().to_rfc3339());
+            snap.reason_code = Some("navigation_started".into());
+        }
+
+        self.bus.browser_manager().update_facebook_session(
+            FacebookSessionState::FacebookLoginInProgress,
+            Some(Utc::now().to_rfc3339()),
+            None,
+            false,
+            Some("navigation_started".into()),
+        );
+
+        let line = self.bus.sidecar_request(
+            RuntimeServiceKind::Session,
+            "open_facebook_login",
+            serde_json::json!({}),
+            Duration::from_secs(90),
+        )?;
+
+        if let Some(result) = line.result {
+            self.apply_sidecar_result(result)?;
+        }
+
+        Ok(self.snapshot())
+    }
+
     fn ensure_on_facebook(&self) -> Result<(), String> {
         let current_url = self.current_page_url()?;
         if is_blank_page_url(current_url.as_deref()) {

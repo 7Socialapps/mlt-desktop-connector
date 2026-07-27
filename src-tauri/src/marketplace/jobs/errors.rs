@@ -17,6 +17,9 @@ pub enum JobErrorCode {
     MarketplaceNotReady,
     VehicleCreateRouteNotReady,
     VehicleCreateVerificationFailed,
+    ImageUploadFailed,
+    FormFillFailed,
+    FormVerificationFailed,
     OperationCancelled,
     RuntimeError,
 }
@@ -38,6 +41,9 @@ impl JobErrorCode {
             Self::MarketplaceNotReady => "MARKETPLACE_NOT_READY",
             Self::VehicleCreateRouteNotReady => "VEHICLE_CREATE_ROUTE_NOT_READY",
             Self::VehicleCreateVerificationFailed => "VEHICLE_CREATE_VERIFICATION_FAILED",
+            Self::ImageUploadFailed => "IMAGE_UPLOAD_FAILED",
+            Self::FormFillFailed => "FORM_FILL_FAILED",
+            Self::FormVerificationFailed => "FORM_VERIFICATION_FAILED",
             Self::OperationCancelled => "OPERATION_CANCELLED",
             Self::RuntimeError => "RUNTIME_ERROR",
         }
@@ -61,6 +67,9 @@ impl JobErrorCode {
             Self::VehicleCreateVerificationFailed => {
                 "Vehicle create form verification failed"
             }
+            Self::ImageUploadFailed => "Listing photo upload failed",
+            Self::FormFillFailed => "Listing field fill failed",
+            Self::FormVerificationFailed => "Filled form verification failed",
             Self::OperationCancelled => "Operation cancelled by user",
             Self::RuntimeError => "Runtime error during job execution",
         }

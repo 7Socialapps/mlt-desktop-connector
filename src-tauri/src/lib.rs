@@ -166,7 +166,7 @@ fn browser_open_marketplace(
 fn browser_open_facebook_login(
     services: tauri::State<'_, AppServices>,
 ) -> Result<BrowserManagerSnapshot, String> {
-    services.browser_manager.open_facebook_login()
+    services.facebook_runtime.open_facebook_login()
 }
 
 #[tauri::command]
@@ -213,6 +213,11 @@ fn runtime_diagnostics_snapshot(
     services: tauri::State<'_, AppServices>,
 ) -> Result<DiagnosticsSnapshot, String> {
     Ok(services.facebook_runtime.diagnostics.snapshot())
+}
+
+#[tauri::command]
+fn get_job_progress(services: tauri::State<'_, AppServices>) -> Option<crate::marketplace::jobs::JobProgressSnapshot> {
+    services.polling.job_progress()
 }
 
 #[tauri::command]
@@ -520,6 +525,7 @@ pub fn run() {
             runtime_cancel_operation,
             runtime_diagnostics_snapshot,
             runtime_status,
+            get_job_progress,
             browser_reset_profile,
             browser_profile_status,
             run_connection_tests_cmd,

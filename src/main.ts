@@ -94,11 +94,30 @@ interface ConnectionTestReport {
   checked_at: string;
 }
 
+interface JobProgressSnapshot {
+  job_id: string;
+  phase: string;
+  progress: number;
+  current_step: string;
+}
+
+const VALIDATION_CHECKPOINTS = [
+  "Launch Browser — Chromium opens with persistent profile",
+  "Check Facebook Session — confirms logged-in state",
+  "Open Marketplace — navigates to marketplace home",
+  "Open Vehicle Create Form — lands on /marketplace/create/vehicle",
+  "Submit prepare_for_review job — connector fills form and uploads images",
+  "Confirm ready_for_review — form editable, Next/Publish visible, NOT clicked",
+  "Publish manually in Chromium — inventory must NOT auto-mark posted",
+];
+
 const app = document.querySelector<HTMLDivElement>("#app")!;
 let pairingActionError: string | null = null;
 let browserActionError: string | null = null;
 let actionInProgress: string | null = null;
 let diagnosticsReport: ConnectionTestReport | null = null;
+let jobProgress: JobProgressSnapshot | null = null;
+let showValidationPanel = false;
 
 function labelize(value: string): string {
   return value.replaceAll("_", " ");
@@ -116,7 +135,7 @@ function remediationForBrowser(browser: BrowserManagerSnapshot): string | null {
   }
   const fb = browser.facebook_session.state;
   if (fb === "facebook_logged_out" || fb === "facebook_session_expired") {
-    return "Use Open Facebook Login and sign in manually.";
+    return "Log into Facebook in the browser window, then click Check Facebook Session.";
   }
   if (fb === "facebook_checkpoint" || fb === "facebook_mfa_required") {
     return "Complete Facebook security steps manually in the browser.";
@@ -138,6 +157,11 @@ function render(
 ) {
   const displayError = pairing.error ?? pairingActionError;
   const remediation = remediationForBrowser(browser);
+  const loggedOut =
+    browser.facebook_session.state === "facebook_logged_out" ||
+    browser.facebook_session.state === "facebook_session_expired" ||
+    runtime.facebook_session_state === "logged_out";
+  const readyForReview = jobProgress?.phase === "ready_for_review";
   const browserReady = browser.status === "browser_ready";
   const browserBusy = ["browser_starting", "browser_restarting"].includes(browser.status);
   const canLaunch =
@@ -167,6 +191,22 @@ function render(
         <div><dt>Device ID</dt><dd class="mono">${status.device_id}</dd></div>
         <div><dt>Paired</dt><dd>${status.paired ? "Yes" : "No"}</dd></div>
         <div><dt>Current job</dt><dd>${status.current_job_id ?? "—"}</dd></div>
+        ${
+          jobProgress
+            ? `<div><dt>Job phase</dt><dd>${labelize(jobProgress.phase)} (${jobProgress.progress}%)</dd></div>
+               <div><dt>Job step</dt><dd>${jobProgress.current_step}</dd></div>`
+            : ""
+        }
+        ${
+          readyForReview
+            ? `<div class="helper remediation" role="note">Listing prepared. Review the Facebook form and publish manually.</div>`
+            : ""
+        }
+        ${
+          loggedOut
+            ? `<div class="helper" role="note">Log into Facebook in the browser window, then click Check Facebook Session.</div>`
+            : ""
+        }
         ${
           status.needs_reconnect
             ? `<div class="error"><dt>Reconnect required</dt><dd>${status.last_error ?? "Reconnect device — start pairing again."}</dd></div>`
@@ -228,6 +268,7 @@ function render(
           <button id="restart-browser" ${canRestart ? "" : "disabled"}>Restart Browser</button>
           <button id="run-runtime-diagnostics" ${actionInProgress ? "disabled" : ""}>Run Runtime Diagnostics</button>
           <button id="run-diagnostics" ${actionInProgress ? "disabled" : ""}>Run Diagnostics</button>
+          <button id="toggle-validation" ${actionInProgress ? "disabled" : ""}>Real-Device Validation</button>
           <button id="open-log-folder">Open Log Folder</button>
           <button id="reset-profile" ${canResetProfile ? "" : "disabled"}>Reset Browser Profile</button>
           <button id="reconnect-device" ${canReconnect ? "" : "disabled"}>Reconnect Device</button>
@@ -242,6 +283,14 @@ function render(
                       `<li class="check-${c.status}"><strong>${c.label}</strong>: ${c.detail}${c.error_code ? ` (${c.error_code})` : ""}</li>`,
                   )
                   .join("")}</ul>
+              </div>`
+            : ""
+        }
+        ${
+          showValidationPanel
+            ? `<div class="diagnostics validation-panel">
+                <h3>Real-device validation checkpoints</h3>
+                <ol>${VALIDATION_CHECKPOINTS.map((c) => `<li>${c}</li>`).join("")}</ol>
               </div>`
             : ""
         }
@@ -293,6 +342,10 @@ function bindActions(
   document.querySelector("#restart-browser")?.addEventListener("click", () => void restartBrowser());
   document.querySelector("#run-runtime-diagnostics")?.addEventListener("click", () => void runRuntimeDiagnostics());
   document.querySelector("#run-diagnostics")?.addEventListener("click", () => void runDiagnostics());
+  document.querySelector("#toggle-validation")?.addEventListener("click", () => {
+    showValidationPanel = !showValidationPanel;
+    void refresh();
+  });
   document.querySelector("#open-log-folder")?.addEventListener("click", () => void openLogFolder());
   document.querySelector("#reset-profile")?.addEventListener("click", () => void resetProfile());
   document.querySelector("#reconnect-device")?.addEventListener("click", () => void reconnectDevice());
@@ -446,22 +499,26 @@ async function reconnectDevice() {
 }
 
 async function refreshWith(pairing: PairingState) {
-  const [status, browser, runtime] = await Promise.all([
+  const [status, browser, runtime, progress] = await Promise.all([
     invoke<ConnectorStatus>("get_status"),
     invoke<BrowserManagerSnapshot>("get_browser_status"),
     invoke<RuntimeStatus>("runtime_status"),
+    invoke<JobProgressSnapshot | null>("get_job_progress"),
   ]);
+  jobProgress = progress;
   render(status, pairing, browser, runtime);
 }
 
 async function refresh() {
   try {
-    const [status, pairing, browser, runtime] = await Promise.all([
+    const [status, pairing, browser, runtime, progress] = await Promise.all([
       invoke<ConnectorStatus>("get_status"),
       invoke<PairingState>("get_pairing_state"),
       invoke<BrowserManagerSnapshot>("get_browser_status"),
       invoke<RuntimeStatus>("runtime_status"),
+      invoke<JobProgressSnapshot | null>("get_job_progress"),
     ]);
+    jobProgress = progress;
     render(status, pairing, browser, runtime);
   } catch (err) {
     app.innerHTML = `<p class="error">Failed to load status: ${String(err)}</p>`;

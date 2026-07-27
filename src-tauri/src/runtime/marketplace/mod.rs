@@ -8,6 +8,9 @@ use serde::{Deserialize, Serialize};
 use crate::browser::{
     is_blank_page_url, parse_marketplace_status, MarketplaceStatus, SidecarMarketplaceResult,
 };
+use crate::marketplace::form::{
+    FormFillReport, FormVerificationReport, ImageUploadReport,
+};
 
 use super::bus::{RuntimeServiceKind, ServiceBus};
 use super::navigation::{NavigationDestination, NavigationService};
@@ -15,6 +18,8 @@ use super::session::FacebookSessionService;
 
 const MARKETPLACE_TIMEOUT: Duration = Duration::from_secs(90);
 const VERIFY_TIMEOUT: Duration = Duration::from_secs(45);
+const FILL_TIMEOUT: Duration = Duration::from_secs(120);
+const UPLOAD_TIMEOUT: Duration = Duration::from_secs(180);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -188,6 +193,141 @@ impl MarketplaceService {
         parse_vehicle_create_verification(vc_value)
     }
 
+    pub fn fill_vehicle_form(
+        &self,
+        payload: &std::collections::HashMap<String, String>,
+    ) -> Result<FormFillReport, String> {
+        self.bus.ensure_browser_ready(RuntimeServiceKind::Marketplace)?;
+
+        let line = self.bus.sidecar_request(
+            RuntimeServiceKind::Marketplace,
+            "fill_vehicle_form",
+            serde_json::json!({ "payload": payload }),
+            FILL_TIMEOUT,
+        )?;
+
+        if line.ok == Some(false) {
+            return Err(line
+                .error
+                .unwrap_or_else(|| "Form fill failed".into()));
+        }
+
+        let result = line
+            .result
+            .ok_or_else(|| "fill_vehicle_form returned no result".to_string())?;
+        let fill_value = result
+            .get("form_fill")
+            .cloned()
+            .unwrap_or(result);
+        serde_json::from_value(fill_value)
+            .map_err(|e| format!("invalid form fill report: {e}"))
+    }
+
+    pub fn upload_vehicle_images(
+        &self,
+        images: &[crate::marketplace::assets::ManifestImageEntry],
+        workspace_root: &std::path::Path,
+    ) -> Result<ImageUploadReport, String> {
+        self.bus.ensure_browser_ready(RuntimeServiceKind::Marketplace)?;
+
+        let sidecar_images: Vec<serde_json::Value> = images
+            .iter()
+            .map(|img| {
+                let abs = workspace_root.join(&img.local_path);
+                serde_json::json!({
+                    "index": img.index,
+                    "local_path": abs.to_string_lossy(),
+                    "source_url": img.source_url,
+                })
+            })
+            .collect();
+
+        let line = self.bus.sidecar_request(
+            RuntimeServiceKind::Marketplace,
+            "upload_vehicle_images",
+            serde_json::json!({ "images": sidecar_images }),
+            UPLOAD_TIMEOUT,
+        )?;
+
+        if line.ok == Some(false) {
+            if let Some(result) = line.result {
+                if let Some(upload) = result.get("image_upload") {
+                    if let Ok(report) = serde_json::from_value::<ImageUploadReport>(upload.clone())
+                    {
+                        if !report.all_uploaded() {
+                            return Err(format!(
+                                "Partial image upload ({} of {})",
+                                report.thumbnail_count, report.expected_count
+                            ));
+                        }
+                        return Ok(report);
+                    }
+                }
+            }
+            return Err(line
+                .error
+                .unwrap_or_else(|| "Image upload failed".into()));
+        }
+
+        let result = line
+            .result
+            .ok_or_else(|| "upload_vehicle_images returned no result".to_string())?;
+        let upload_value = result
+            .get("image_upload")
+            .cloned()
+            .unwrap_or(result);
+        serde_json::from_value(upload_value)
+            .map_err(|e| format!("invalid image upload report: {e}"))
+    }
+
+    pub fn verify_filled_form(
+        &self,
+        expected: &std::collections::HashMap<String, String>,
+        expected_image_count: u32,
+    ) -> Result<FormVerificationReport, String> {
+        self.bus.ensure_browser_ready(RuntimeServiceKind::Marketplace)?;
+
+        let line = self.bus.sidecar_request(
+            RuntimeServiceKind::Marketplace,
+            "verify_filled_form",
+            serde_json::json!({
+                "expected_values": expected,
+                "expected_image_count": expected_image_count,
+            }),
+            VERIFY_TIMEOUT,
+        )?;
+
+        if line.ok == Some(false) {
+            if let Some(result) = line.result.clone() {
+                if let Some(v) = result.get("form_verification") {
+                    return parse_form_verification(v.clone());
+                }
+            }
+            return Err(line
+                .error
+                .unwrap_or_else(|| "Form verification failed".into()));
+        }
+
+        let result = line
+            .result
+            .ok_or_else(|| "verify_filled_form returned no result".to_string())?;
+        let verify_value = result
+            .get("form_verification")
+            .cloned()
+            .unwrap_or(result);
+        parse_form_verification(verify_value)
+    }
+
+    pub fn bring_browser_forward(&self) -> Result<(), String> {
+        self.bus.sidecar_request(
+            RuntimeServiceKind::Marketplace,
+            "bring_browser_forward",
+            serde_json::json!({}),
+            Duration::from_secs(10),
+        )?;
+        Ok(())
+    }
+
     fn open_destination(
         &self,
         destination: NavigationDestination,
@@ -256,6 +396,13 @@ impl MarketplaceService {
 
         Ok(())
     }
+}
+
+fn parse_form_verification(
+    value: serde_json::Value,
+) -> Result<FormVerificationReport, String> {
+    serde_json::from_value(value)
+        .map_err(|e| format!("invalid form verification payload: {e}"))
 }
 
 fn parse_vehicle_create_verification(

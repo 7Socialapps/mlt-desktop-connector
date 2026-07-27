@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-/// Job lifecycle phases for prepare-for-review automation (M3.3).
+/// Job lifecycle phases for prepare-for-review automation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum JobPhase {
@@ -13,7 +13,10 @@ pub enum JobPhase {
     OpeningMarketplace,
     OpeningVehicleCreate,
     VerifyingVehicleCreate,
-    CreateRouteReady,
+    UploadingImages,
+    FillingFields,
+    VerifyingFields,
+    ReadyForReview,
     Cancelled,
     Failed,
 }
@@ -30,7 +33,10 @@ impl JobPhase {
             Self::OpeningMarketplace => "opening_marketplace",
             Self::OpeningVehicleCreate => "opening_vehicle_create",
             Self::VerifyingVehicleCreate => "verifying_vehicle_create",
-            Self::CreateRouteReady => "create_route_ready",
+            Self::UploadingImages => "images_uploading",
+            Self::FillingFields => "fields_filling",
+            Self::VerifyingFields => "verifying_fields",
+            Self::ReadyForReview => "ready_for_review",
             Self::Cancelled => "cancelled",
             Self::Failed => "failed",
         }
@@ -41,13 +47,16 @@ impl JobPhase {
             Self::Queued => 0,
             Self::Claimed => 5,
             Self::ValidatingPayload => 10,
-            Self::PreparingAssets => 30,
-            Self::StartingRuntime => 40,
-            Self::CheckingFacebookSession => 50,
-            Self::OpeningMarketplace => 60,
-            Self::OpeningVehicleCreate => 75,
-            Self::VerifyingVehicleCreate => 85,
-            Self::CreateRouteReady => 100,
+            Self::PreparingAssets => 20,
+            Self::StartingRuntime => 30,
+            Self::CheckingFacebookSession => 40,
+            Self::OpeningMarketplace => 50,
+            Self::OpeningVehicleCreate => 60,
+            Self::VerifyingVehicleCreate => 70,
+            Self::UploadingImages => 80,
+            Self::FillingFields => 88,
+            Self::VerifyingFields => 95,
+            Self::ReadyForReview => 100,
             Self::Cancelled => 0,
             Self::Failed => 0,
         }
@@ -64,14 +73,17 @@ impl JobPhase {
             Self::OpeningMarketplace => "Opening Facebook Marketplace",
             Self::OpeningVehicleCreate => "Opening vehicle create form",
             Self::VerifyingVehicleCreate => "Verifying vehicle create form",
-            Self::CreateRouteReady => "Vehicle create route ready for review",
+            Self::UploadingImages => "Uploading listing photos",
+            Self::FillingFields => "Filling listing fields",
+            Self::VerifyingFields => "Verifying filled form",
+            Self::ReadyForReview => "Listing prepared — ready for dealer review",
             Self::Cancelled => "Operation cancelled",
             Self::Failed => "Job failed",
         }
     }
 
     pub fn is_terminal(&self) -> bool {
-        matches!(self, Self::CreateRouteReady | Self::Cancelled | Self::Failed)
+        matches!(self, Self::ReadyForReview | Self::Cancelled | Self::Failed)
     }
 }
 
@@ -80,25 +92,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn create_route_ready_is_terminal_at_100_percent() {
-        assert_eq!(JobPhase::CreateRouteReady.progress(), 100);
-        assert!(JobPhase::CreateRouteReady.is_terminal());
-        assert_eq!(
-            JobPhase::CreateRouteReady.status_str(),
-            "create_route_ready"
-        );
+    fn ready_for_review_is_terminal_at_100_percent() {
+        assert_eq!(JobPhase::ReadyForReview.progress(), 100);
+        assert!(JobPhase::ReadyForReview.is_terminal());
+        assert_eq!(JobPhase::ReadyForReview.status_str(), "ready_for_review");
     }
 
     #[test]
     fn phase_status_strings_are_snake_case() {
         for phase in [
             JobPhase::OpeningMarketplace,
-            JobPhase::VerifyingVehicleCreate,
+            JobPhase::UploadingImages,
+            JobPhase::FillingFields,
             JobPhase::CheckingFacebookSession,
         ] {
             let s = phase.status_str();
             assert!(!s.contains(' '));
             assert_eq!(s, s.to_lowercase());
         }
+    }
+
+    #[test]
+    fn backend_aligned_upload_and_fill_statuses() {
+        assert_eq!(JobPhase::UploadingImages.status_str(), "images_uploading");
+        assert_eq!(JobPhase::FillingFields.status_str(), "fields_filling");
     }
 }

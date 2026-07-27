@@ -3,6 +3,7 @@ use crate::api::ConnectorApiClient;
 use crate::runtime::FacebookRuntime;
 
 use super::phases::JobPhase;
+use super::tracker::JobProgressTracker;
 
 pub async fn update_status(
     client: &ConnectorApiClient,
@@ -11,10 +12,15 @@ pub async fn update_status(
     phase: JobPhase,
     step_override: Option<&str>,
     runtime: Option<&FacebookRuntime>,
+    progress_tracker: Option<&JobProgressTracker>,
 ) -> Result<(), String> {
     let message = step_override
         .map(String::from)
         .unwrap_or_else(|| build_step_message(phase, runtime));
+
+    if let Some(tracker) = progress_tracker {
+        tracker.set(job_id, phase, &message);
+    }
 
     client
         .update_status(
@@ -54,7 +60,10 @@ fn build_step_message(phase: JobPhase, runtime: Option<&FacebookRuntime>) -> Str
                 .unwrap_or("unknown");
             format!("{base} (destination: {dest})")
         }
-        JobPhase::CreateRouteReady => {
+        JobPhase::UploadingImages | JobPhase::FillingFields | JobPhase::VerifyingFields => {
+            format!("{base} (marketplace: {})", status.marketplace_state)
+        }
+        JobPhase::ReadyForReview => {
             format!(
                 "{base} — browser: {}, session: {}, marketplace: {}",
                 status.browser_state, status.facebook_session_state, status.marketplace_state
