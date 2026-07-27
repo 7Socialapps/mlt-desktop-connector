@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use parking_lot::Mutex;
-use tauri::AppHandle;
+use tauri::{AppHandle, Emitter};
 use tracing::info;
 
 use crate::api::ConnectorApiClient;

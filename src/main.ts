@@ -12,9 +12,17 @@ interface ConnectorStatus {
   last_error: string | null;
 }
 
+interface PairingState {
+  active: boolean;
+  pairing_code: string | null;
+  expires_at: string | null;
+  status: string;
+  error: string | null;
+}
+
 const app = document.querySelector<HTMLDivElement>("#app")!;
 
-function render(status: ConnectorStatus) {
+function render(status: ConnectorStatus, pairing: PairingState) {
   app.innerHTML = `
     <main class="status-window">
       <header>
@@ -25,7 +33,7 @@ function render(status: ConnectorStatus) {
         <div><dt>Version</dt><dd>${status.connector_version}</dd></div>
         <div><dt>Environment</dt><dd>${status.environment}</dd></div>
         <div><dt>Device ID</dt><dd class="mono">${status.device_id}</dd></div>
-        <div><dt>Paired</dt><dd>${status.paired ? "Yes" : "No — pair from dashboard"}</dd></div>
+        <div><dt>Paired</dt><dd>${status.paired ? "Yes" : "No"}</dd></div>
         <div><dt>Last heartbeat</dt><dd>${status.last_heartbeat_at ?? "—"}</dd></div>
         ${
           status.last_error
@@ -33,27 +41,59 @@ function render(status: ConnectorStatus) {
             : ""
         }
       </dl>
+
+      <section class="pairing-section">
+        <h2>Pair with MLT Dashboard</h2>
+        <p class="helper">
+          Start pairing here, then sign into the MLT dashboard and enter this code under
+          Web Poster → Pair Desktop Connector. No MLT password is collected in this app.
+        </p>
+        ${
+          pairing.pairing_code
+            ? `<div class="pairing-code">${pairing.pairing_code}</div>`
+            : `<p class="helper">No active pairing session.</p>`
+        }
+        <p class="helper">Status: ${pairing.status}${pairing.error ? ` — ${pairing.error}` : ""}</p>
+        <button id="start-pairing" ${pairing.active ? "disabled" : ""}>
+          ${pairing.active ? "Waiting for dashboard approval…" : "Start pairing session"}
+        </button>
+      </section>
+
       <footer>
         <p>Runs in the system tray. Close this window to hide — the connector keeps running.</p>
       </footer>
     </main>
   `;
+
+  document.querySelector("#start-pairing")?.addEventListener("click", () => {
+    void invoke("start_pairing_session", { deviceName: null }).then(refresh);
+  });
 }
 
 async function refresh() {
   try {
-    const status = await invoke<ConnectorStatus>("get_status");
-    render(status);
+    const [status, pairing] = await Promise.all([
+      invoke<ConnectorStatus>("get_status"),
+      invoke<PairingState>("get_pairing_state"),
+    ]);
+    render(status, pairing);
   } catch (err) {
     app.innerHTML = `<p class="error">Failed to load status: ${String(err)}</p>`;
   }
 }
 
-await refresh();
-await listen("connector://status-changed", () => {
-  void refresh();
-});
+async function main() {
+  await refresh();
+  await listen("connector://status-changed", () => {
+    void refresh();
+  });
+  await listen("connector://pairing-changed", () => {
+    void refresh();
+  });
 
-setInterval(() => {
-  void refresh();
-}, 5_000);
+  setInterval(() => {
+    void refresh();
+  }, 5_000);
+}
+
+void main();

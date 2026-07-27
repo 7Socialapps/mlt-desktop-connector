@@ -65,8 +65,8 @@ pub fn clear_credentials() -> Result<()> {
 }
 
 pub fn has_access_token() -> bool {
-    matches!(
-        entry(ACCESS_TOKEN_KEY).and_then(|e| e.get_password()),
-        Ok(_)
-    )
+    match entry(ACCESS_TOKEN_KEY) {
+        Ok(e) => matches!(e.get_password(), Ok(_)),
+        Err(_) => false,
+    }
 }

@@ -9,7 +9,7 @@ use tracing::{debug, info, warn};
 
 use crate::api::types::{ConnectorOs, FacebookSessionState, HeartbeatRequest};
 use crate::api::ConnectorApiClient;
-use crate::credentials::{has_access_token, load_credentials};
+use crate::credentials::{clear_credentials, has_access_token, load_credentials};
 use crate::state::{AppState, ConnectionState};
 use crate::version::{CONNECTOR_VERSION, DEFAULT_CAPABILITIES};
 
@@ -64,6 +64,17 @@ impl HeartbeatService {
                         emit_status(&app, &state);
                     }
                     Err(err) => {
+                        let msg = err.to_string();
+                        if msg.contains("DEVICE_REVOKED") || msg.contains("revoked") {
+                            let _ = clear_credentials();
+                            state.lock().paired = false;
+                            state.lock().connection_state = ConnectionState::Offline;
+                            state.lock().last_error =
+                                Some("Device revoked — pair again from dashboard".into());
+                            emit_status(&app, &state);
+                            tokio::time::sleep(HEARTBEAT_INTERVAL).await;
+                            continue;
+                        }
                         warn!(error = %err, "heartbeat failed");
                         {
                             let mut guard = state.lock();

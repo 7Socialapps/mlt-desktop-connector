@@ -97,3 +97,47 @@ footer {
 footer p {
   margin: 0;
 }
+
+.pairing-section {
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid #2a3544;
+}
+
+.pairing-section h2 {
+  font-size: 0.95rem;
+  margin: 0 0 0.5rem;
+}
+
+.pairing-code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 1.75rem;
+  letter-spacing: 0.25em;
+  font-weight: 700;
+  padding: 0.75rem;
+  background: #1a2433;
+  border-radius: 8px;
+  text-align: center;
+  margin: 0.75rem 0;
+}
+
+.helper {
+  font-size: 0.8rem;
+  color: #9aa7b8;
+  line-height: 1.4;
+}
+
+#start-pairing {
+  margin-top: 0.5rem;
+  padding: 0.5rem 1rem;
+  cursor: pointer;
+  border-radius: 6px;
+  border: 1px solid #3a4a5c;
+  background: #1a2433;
+  color: inherit;
+}
+
+#start-pairing:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}

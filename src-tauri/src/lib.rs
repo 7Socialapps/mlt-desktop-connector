@@ -26,13 +26,16 @@ use lifecycle::{
     ShutdownCoordinator,
 };
 use services::{
-    enable_polling_if_authenticated, HeartbeatService, PollingService,
+    enable_polling_if_authenticated, HeartbeatService, PairingCoordinator, PairingUiState,
+    PollingService,
 };
 use state::{AppState, ConnectionState};
 
 struct AppServices {
     shutdown: Arc<ShutdownCoordinator>,
     state: Arc<Mutex<AppState>>,
+    pairing: Arc<PairingCoordinator>,
+    polling: Arc<PollingService>,
 }
 
 #[tauri::command]
@@ -43,6 +46,20 @@ fn get_status(services: tauri::State<'_, AppServices>) -> state::StatusSnapshot 
 #[tauri::command]
 fn get_connector_version() -> &'static str {
     version::CONNECTOR_VERSION
+}
+
+#[tauri::command]
+fn get_pairing_state(services: tauri::State<'_, AppServices>) -> PairingUiState {
+    services.pairing.snapshot()
+}
+
+#[tauri::command]
+async fn start_pairing_session(
+    services: tauri::State<'_, AppServices>,
+    device_name: Option<String>,
+) -> Result<PairingUiState, String> {
+    let device_id = services.state.lock().device_id.to_string();
+    services.pairing.start(device_id, device_name).await
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -64,7 +81,7 @@ pub fn run() {
         }))
         .setup(move |app| {
             let _log_guard = logging::init_logging(app.handle())
-                .map_err(|e| -> Box<dyn std::error::Error> { Box::new(e) })?;
+                .map_err(|e| -> Box<dyn std::error::Error> { e.to_string().into() })?;
 
             let device_id = device::load_or_create_device_id(app.handle())?;
             let paired = has_access_token();
@@ -82,7 +99,17 @@ pub fn run() {
 
             let heartbeat =
                 HeartbeatService::spawn(app.handle().clone(), state.clone(), api_client.clone());
-            let polling = PollingService::spawn(app.handle().clone(), state.clone());
+            let polling = PollingService::spawn(
+                app.handle().clone(),
+                state.clone(),
+                api_client.clone(),
+            );
+            let pairing = Arc::new(PairingCoordinator::new(
+                app.handle().clone(),
+                state.clone(),
+                api_client.clone(),
+                polling.clone(),
+            ));
 
             {
                 let mut guard = state.lock();
@@ -103,6 +130,8 @@ pub fn run() {
             app.manage(AppServices {
                 shutdown,
                 state: state.clone(),
+                pairing,
+                polling,
             });
 
             info!(
@@ -115,7 +144,12 @@ pub fn run() {
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_status, get_connector_version])
+        .invoke_handler(tauri::generate_handler![
+            get_status,
+            get_connector_version,
+            get_pairing_state,
+            start_pairing_session
+        ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app_handle, event| {
@@ -181,7 +215,7 @@ fn build_main_window(app: &tauri::AppHandle) -> tauri::Result<()> {
 
     WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
         .title("MLT Desktop Connector")
-        .inner_size(440.0, 360.0)
+        .inner_size(440.0, 420.0)
         .resizable(true)
         .build()?;
 
