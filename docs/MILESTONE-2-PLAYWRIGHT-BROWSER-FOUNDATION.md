@@ -10,7 +10,8 @@
 | **Complete** | 2.6 Marketplace Navigation |
 | **Complete** | 2.7 Heartbeat Integration |
 | **Complete** | 2.8 Desktop UI |
-| Pending | 2.9–2.13 |
+| **Complete** | 2.10 Health Monitoring |
+| Pending | 2.9, 2.11–2.13 |
 
 ## Architecture
 

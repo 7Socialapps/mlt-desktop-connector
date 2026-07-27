@@ -3,7 +3,7 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 
 use crate::browser::BrowserManager;
-use crate::services::{HeartbeatService, PollingService};
+use crate::services::{BrowserHealthService, HeartbeatService, PollingService};
 
 static SHUTTING_DOWN: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
@@ -15,6 +15,7 @@ pub fn is_shutting_down() -> bool {
 pub struct ShutdownCoordinator {
     heartbeat: Arc<HeartbeatService>,
     polling: Arc<PollingService>,
+    browser_health: Arc<BrowserHealthService>,
     browser: Arc<BrowserManager>,
 }
 
@@ -22,11 +23,13 @@ impl ShutdownCoordinator {
     pub fn new(
         heartbeat: Arc<HeartbeatService>,
         polling: Arc<PollingService>,
+        browser_health: Arc<BrowserHealthService>,
         browser: Arc<BrowserManager>,
     ) -> Self {
         Self {
             heartbeat,
             polling,
+            browser_health,
             browser,
         }
     }
@@ -39,6 +42,7 @@ impl ShutdownCoordinator {
         tracing::info!("graceful shutdown initiated");
         state.lock().connection_state = crate::state::ConnectionState::ShuttingDown;
 
+        self.browser_health.stop();
         self.browser.shutdown();
         self.heartbeat.stop();
         self.polling.stop();
