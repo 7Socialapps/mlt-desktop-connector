@@ -10,6 +10,13 @@ import fs from "node:fs";
 import path from "node:path";
 import { detectFromPage } from "./facebook-detector.mjs";
 import { evaluateMarketplaceFromDetection } from "./marketplace-evaluator.mjs";
+import { evaluateMessengerFromDetection } from "./messenger-evaluator.mjs";
+import { evaluateNotificationsFromDetection } from "./notifications-evaluator.mjs";
+import {
+  destinationUrl,
+  navigateWithRetry,
+  waitForPageReady,
+} from "./navigation.mjs";
 
 /** @typedef {"stopped"|"starting"|"ready"|"crashed"} BrowserState */
 /** @typedef {"profile_missing"|"profile_initializing"|"profile_ready"|"profile_locked"|"profile_corrupt"|"profile_reset_required"} ProfileState */
@@ -404,37 +411,98 @@ async function captureDiagnosticScreenshot(label) {
   }
 }
 
-/**
- * @param {string} targetUrl
- * @returns {Promise<object>}
- */
-async function navigateWithRetry(targetUrl, maxAttempts = 2) {
-  let lastError = null;
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    try {
-      await page.goto(targetUrl, {
-        waitUntil: "domcontentloaded",
-        timeout: 45_000,
-      });
-      await page.waitForTimeout(2000);
-      return { ok: true, attempt };
-    } catch (err) {
-      lastError = err;
-      if (attempt < maxAttempts) {
-        await page.waitForTimeout(1000 * attempt);
-      }
-    }
-  }
-  throw lastError;
-}
-
-/**
- * @returns {Promise<object>}
- */
 async function evaluateMarketplaceState() {
   const fb = await detectFromPage(page);
   const url = page.url();
   return evaluateMarketplaceFromDetection(fb, url);
+}
+
+async function handleNavigate(id, params = {}) {
+  if (!page || browserState !== "ready") {
+    fail(id, "NO_ACTIVE_PAGE", "Browser is not ready — launch the browser first");
+    return;
+  }
+
+  const destination = params?.destination;
+  const targetUrl = destinationUrl(destination);
+  if (!targetUrl) {
+    fail(id, "INVALID_DESTINATION", `Unknown navigation destination: ${destination}`);
+    return;
+  }
+
+  try {
+    const nav = await navigateWithRetry(page, targetUrl);
+    const readiness = await waitForPageReady(page);
+    const fb = await runFacebookDetection();
+    ok(id, {
+      navigated: true,
+      destination,
+      attempt: nav.attempt,
+      current_url: nav.current_url,
+      page_title: readiness.title,
+      facebook: fb ?? lastFacebookDetection,
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    fail(id, "NAVIGATION_FAILED", message, {
+      destination,
+      current_url: page.url(),
+    });
+  }
+}
+
+async function handleOpenMessenger(id) {
+  if (!page || browserState !== "ready") {
+    fail(id, "NO_ACTIVE_PAGE", "Browser is not ready — launch the browser first");
+    return;
+  }
+
+  try {
+    const targetUrl = destinationUrl("messenger");
+    await navigateWithRetry(page, targetUrl);
+    await waitForPageReady(page);
+    const fb = (await runFacebookDetection()) ?? lastFacebookDetection ?? {
+      state: "facebook_not_checked",
+      reason_code: "no_detection",
+    };
+    const url = page.url();
+    const evaluation = evaluateMessengerFromDetection(fb, url);
+    const checked_at = new Date().toISOString();
+    ok(id, {
+      messenger: { ...evaluation, checked_at },
+      navigated: true,
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    fail(id, "MESSENGER_NAV_FAILED", message);
+  }
+}
+
+async function handleOpenNotifications(id) {
+  if (!page || browserState !== "ready") {
+    fail(id, "NO_ACTIVE_PAGE", "Browser is not ready — launch the browser first");
+    return;
+  }
+
+  try {
+    const targetUrl = destinationUrl("notifications");
+    await navigateWithRetry(page, targetUrl);
+    await waitForPageReady(page);
+    const fb = (await runFacebookDetection()) ?? lastFacebookDetection ?? {
+      state: "facebook_not_checked",
+      reason_code: "no_detection",
+    };
+    const url = page.url();
+    const evaluation = evaluateNotificationsFromDetection(fb, url);
+    const checked_at = new Date().toISOString();
+    ok(id, {
+      notifications: { ...evaluation, checked_at },
+      navigated: true,
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    fail(id, "NOTIFICATIONS_NAV_FAILED", message);
+  }
 }
 
 async function handleOpenMarketplace(id, params = {}) {
@@ -444,16 +512,15 @@ async function handleOpenMarketplace(id, params = {}) {
   }
 
   const createVehicle = Boolean(params?.create_vehicle);
-  const targetUrl = createVehicle
-    ? "https://www.facebook.com/marketplace/create/vehicle"
-    : "https://www.facebook.com/marketplace/";
+  const destination = createVehicle ? "marketplace_create_vehicle" : "marketplace";
+  const targetUrl = destinationUrl(destination);
 
   emitEvent("marketplace_status_changed", {
     status: "marketplace_loading",
   });
 
   try {
-    await navigateWithRetry(targetUrl);
+    await navigateWithRetry(page, targetUrl);
     const evaluation = await evaluateMarketplaceState();
     const checked_at = new Date().toISOString();
     let screenshot_path = null;
@@ -593,6 +660,15 @@ async function dispatch(line) {
         break;
       case "open_marketplace":
         await handleOpenMarketplace(id, params ?? {});
+        break;
+      case "navigate":
+        await handleNavigate(id, params ?? {});
+        break;
+      case "open_messenger":
+        await handleOpenMessenger(id);
+        break;
+      case "open_notifications":
+        await handleOpenNotifications(id);
         break;
       case "get_active_page":
         await handleGetActivePage(id);

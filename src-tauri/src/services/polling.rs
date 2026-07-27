@@ -18,7 +18,7 @@ use crate::marketplace::payload::{
 use crate::state::{AppState, ConnectionState};
 use crate::version::CONNECTOR_VERSION;
 
-/// Executes connector job transport for test/dummy jobs — no Facebook automation.
+/// Job transport polls the backend; browser automation uses `FacebookRuntime` (M4+).
 pub struct PollingService {
     enabled: Arc<AtomicBool>,
     shutdown: Arc<AtomicBool>,

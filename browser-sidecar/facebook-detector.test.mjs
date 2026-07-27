@@ -99,6 +99,36 @@ function testLoginInProgress() {
   assert.equal(result.state, "facebook_login_in_progress");
 }
 
+function testTemporaryRestriction() {
+  const result = detectFacebookSession({
+    url: "https://www.facebook.com/",
+    title: "Temporarily Blocked",
+    hasLoginForm: false,
+    hasCheckpointText: false,
+    hasMfaText: false,
+    hasNavBar: false,
+    hasLogoutSignal: false,
+    hasTemporaryRestrictionText: true,
+    hasDisabledAccountText: false,
+  });
+  assert.equal(result.state, "facebook_temporary_restriction");
+}
+
+function testDisabledAccount() {
+  const result = detectFacebookSession({
+    url: "https://www.facebook.com/disabled/",
+    title: "Account Disabled",
+    hasLoginForm: false,
+    hasCheckpointText: false,
+    hasMfaText: false,
+    hasNavBar: false,
+    hasLogoutSignal: false,
+    hasTemporaryRestrictionText: false,
+    hasDisabledAccountText: true,
+  });
+  assert.equal(result.state, "facebook_disabled_account");
+}
+
 function testNotFacebookUrl() {
   const result = detectFacebookSession({
     url: "https://example.com/",
@@ -119,6 +149,8 @@ testCheckpoint();
 testMfa();
 testSessionExpired();
 testLoginInProgress();
+testTemporaryRestriction();
+testDisabledAccount();
 testNotFacebookUrl();
 testUrlHelpers();
 console.log("facebook-detector tests passed");

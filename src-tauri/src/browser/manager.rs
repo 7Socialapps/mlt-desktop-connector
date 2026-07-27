@@ -8,14 +8,14 @@ use parking_lot::Mutex;
 use tauri::{AppHandle, Emitter};
 use tracing::{info, warn};
 
-use super::facebook::{apply_detection, SidecarFacebookDetection};
-use super::marketplace::{apply_marketplace_result, SidecarMarketplaceResult};
+use super::facebook::{apply_detection, FacebookSessionState, SidecarFacebookDetection};
+use super::marketplace::{apply_marketplace_result, SidecarMarketplaceResult, MarketplaceStatus};
 use super::profile::{inspect_local_profile, reset_profile_dir, resolve_profile_dir, resolve_diagnostics_dir, ProfileStatus};
 use super::runtime::BrowserRuntimeService;
 use super::sidecar::{SidecarDaemon, SidecarEvent};
 use super::types::{
-    BrowserActivePage, BrowserManagerSnapshot, BrowserRuntimeStatus, SidecarPageResult,
-    SidecarStatusResult, MAX_AUTO_RESTART_ATTEMPTS,
+    BrowserActivePage, BrowserManagerSnapshot, BrowserRuntimeStatus, SidecarDaemonLine,
+    SidecarPageResult, SidecarStatusResult, MAX_AUTO_RESTART_ATTEMPTS,
 };
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const HEALTH_CHECK_TIMEOUT: Duration = Duration::from_secs(5);
@@ -49,6 +49,10 @@ pub fn status_after_crash(
     }
 }
 
+pub type MarketplaceDelegate =
+    Arc<dyn Fn(bool) -> Result<BrowserManagerSnapshot, String> + Send + Sync>;
+pub type SessionDelegate = Arc<dyn Fn() -> Result<BrowserManagerSnapshot, String> + Send + Sync>;
+
 pub struct BrowserManager {
     runtime: Arc<BrowserRuntimeService>,
     daemon: Arc<SidecarDaemon>,
@@ -57,6 +61,8 @@ pub struct BrowserManager {
     lifecycle_lock: Arc<Mutex<()>>,
     app_handle: Mutex<Option<AppHandle>>,
     monitor_started: Mutex<bool>,
+    marketplace_delegate: Mutex<Option<MarketplaceDelegate>>,
+    session_delegate: Mutex<Option<SessionDelegate>>,
 }
 
 impl BrowserManager {
@@ -70,7 +76,73 @@ impl BrowserManager {
             lifecycle_lock: Arc::new(Mutex::new(())),
             app_handle: Mutex::new(None),
             monitor_started: Mutex::new(false),
+            marketplace_delegate: Mutex::new(None),
+            session_delegate: Mutex::new(None),
         }
+    }
+
+    pub fn set_runtime_delegates(
+        &self,
+        marketplace: MarketplaceDelegate,
+        session: SessionDelegate,
+    ) {
+        *self.marketplace_delegate.lock() = Some(marketplace);
+        *self.session_delegate.lock() = Some(session);
+    }
+
+    pub fn sidecar_request(
+        &self,
+        method: &str,
+        params: serde_json::Value,
+        timeout: Duration,
+    ) -> Result<SidecarDaemonLine, String> {
+        let _guard = self.lifecycle_lock.lock();
+        self.daemon
+            .request(method, params, timeout)
+            .map_err(|e| e.to_string())
+    }
+
+    pub fn ensure_browser_for_navigation(&self) -> Result<(), String> {
+        let _guard = self.lifecycle_lock.lock();
+        self.ensure_browser_for_navigation_inner()
+    }
+
+    pub fn touch_health_check(&self) {
+        self.state.lock().last_health_check_at = Some(Utc::now().to_rfc3339());
+    }
+
+    pub fn touch_restart(&self) {
+        self.state.lock().last_restart_at = Some(Utc::now().to_rfc3339());
+    }
+
+    pub fn update_facebook_session(
+        &self,
+        state: FacebookSessionState,
+        checked_at: Option<String>,
+        current_url: Option<String>,
+        marketplace_accessible: bool,
+        reason_code: Option<String>,
+    ) {
+        let mut guard = self.state.lock();
+        guard.facebook_session.state = state;
+        guard.facebook_session.checked_at = checked_at;
+        guard.facebook_session.current_url = current_url;
+        guard.facebook_session.marketplace_accessible = marketplace_accessible;
+        guard.facebook_session.reason_code = reason_code;
+    }
+
+    pub fn update_marketplace_from_sidecar(&self, raw: &SidecarMarketplaceResult) {
+        let mut guard = self.state.lock();
+        apply_marketplace_result(&mut guard.marketplace, raw);
+        guard.active_page_url = Some(raw.current_url.clone());
+        self.emit_changed();
+    }
+
+    pub fn set_marketplace_loading(&self) {
+        let mut guard = self.state.lock();
+        guard.marketplace.status = MarketplaceStatus::MarketplaceLoading;
+        guard.marketplace.checked_at = Some(Utc::now().to_rfc3339());
+        self.emit_changed();
     }
 
     pub fn initialize(&self, app_handle: AppHandle) -> Result<(), String> {
@@ -178,6 +250,13 @@ impl BrowserManager {
     }
 
     pub fn open_marketplace(&self, create_vehicle: bool) -> Result<BrowserManagerSnapshot, String> {
+        if let Some(delegate) = self.marketplace_delegate.lock().clone() {
+            return delegate(create_vehicle);
+        }
+        self.open_marketplace_legacy(create_vehicle)
+    }
+
+    fn open_marketplace_legacy(&self, create_vehicle: bool) -> Result<BrowserManagerSnapshot, String> {
         let _guard = self.lifecycle_lock.lock();
         self.ensure_browser_for_navigation()?;
 
@@ -259,6 +338,13 @@ impl BrowserManager {
     }
 
     pub fn detect_facebook_session(&self) -> Result<BrowserManagerSnapshot, String> {
+        if let Some(delegate) = self.session_delegate.lock().clone() {
+            return delegate();
+        }
+        self.detect_facebook_session_legacy()
+    }
+
+    fn detect_facebook_session_legacy(&self) -> Result<BrowserManagerSnapshot, String> {
         if !self.state.lock().enabled {
             return Ok(self.snapshot());
         }
@@ -577,7 +663,11 @@ impl BrowserManager {
             }
         }
 
-        self.launch_inner(auto)
+        let result = self.launch_inner(auto);
+        if result.is_ok() {
+            self.touch_restart();
+        }
+        result
     }
 
     fn handle_launch_failure(&self, message: &str, code: &str) {
@@ -709,6 +799,8 @@ impl BrowserManager {
             lifecycle_lock: self.lifecycle_lock.clone(),
             app_handle: Mutex::new(self.app_handle.lock().clone()),
             monitor_started: Mutex::new(true),
+            marketplace_delegate: Mutex::new(self.marketplace_delegate.lock().clone()),
+            session_delegate: Mutex::new(self.session_delegate.lock().clone()),
         }
     }
 
@@ -742,7 +834,7 @@ impl BrowserManager {
         }
     }
 
-    fn ensure_browser_for_navigation(&self) -> Result<(), String> {
+    fn ensure_browser_for_navigation_inner(&self) -> Result<(), String> {
         if !self.state.lock().enabled {
             return Err("Browser subsystem disabled".into());
         }

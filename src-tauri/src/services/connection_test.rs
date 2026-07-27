@@ -8,6 +8,7 @@ use crate::api::ConnectorApiClient;
 use crate::browser::{
     url_category, BrowserManager, BrowserRuntimeStatus, MarketplaceStatus, ProfileStatus,
 };
+use crate::runtime::FacebookRuntime;
 use crate::credentials::{ensure_access_token, has_access_token, is_paired};
 use crate::state::{AppState, ConnectionState};
 use crate::version::CONNECTOR_VERSION;
@@ -75,7 +76,9 @@ fn check_warn(id: &str, label: &str, detail: &str, code: Option<&str>) -> Connec
 pub fn build_heartbeat_browser_fields(
     state: &AppState,
     browser: &crate::browser::BrowserManagerSnapshot,
+    facebook_runtime: &FacebookRuntime,
 ) -> HeartbeatBrowserPayload {
+    let runtime_status = facebook_runtime.aggregate_status();
     let connector_status = match state.connection_state {
         ConnectionState::Connected | ConnectionState::Idle => "connector_ready",
         ConnectionState::Reconnecting | ConnectionState::Starting => "connector_reconnecting",
@@ -102,9 +105,20 @@ pub fn build_heartbeat_browser_fields(
             .facebook_session
             .checked_at
             .clone()
-            .or(browser.last_health_check_at.clone()),
+            .or(browser.last_health_check_at.clone())
+            .or(runtime_status.last_health_check.clone()),
         last_browser_error_code: browser.last_error_code.clone(),
         connector_version: CONNECTOR_VERSION.to_string(),
+        current_facebook_account: runtime_status.current_facebook_account,
+        session_state: Some(runtime_status.session_state),
+        marketplace_ready: Some(runtime_status.marketplace_ready),
+        messenger_ready: Some(runtime_status.messenger_ready),
+        notifications_ready: Some(runtime_status.notifications_ready),
+        browser_pid: runtime_status.browser_pid,
+        profile_version: Some(runtime_status.profile_version),
+        current_service: runtime_status.current_service,
+        last_health_check: runtime_status.last_health_check,
+        last_restart: runtime_status.last_restart,
     }
 }
 
@@ -120,6 +134,16 @@ pub struct HeartbeatBrowserPayload {
     pub last_browser_check_at: Option<String>,
     pub last_browser_error_code: Option<String>,
     pub connector_version: String,
+    pub current_facebook_account: Option<String>,
+    pub session_state: Option<String>,
+    pub marketplace_ready: Option<bool>,
+    pub messenger_ready: Option<bool>,
+    pub notifications_ready: Option<bool>,
+    pub browser_pid: Option<u32>,
+    pub profile_version: Option<String>,
+    pub current_service: Option<String>,
+    pub last_health_check: Option<String>,
+    pub last_restart: Option<String>,
 }
 
 pub async fn run_connection_tests(
@@ -127,7 +151,9 @@ pub async fn run_connection_tests(
     state: &Arc<Mutex<AppState>>,
     browser_manager: &BrowserManager,
     browser_runtime: &crate::browser::BrowserRuntimeService,
+    _facebook_runtime: &FacebookRuntime,
 ) -> ConnectionTestReport {
+    let _ = _facebook_runtime;
     let mut checks = Vec::new();
 
     // Backend auth
@@ -303,7 +329,9 @@ pub async fn run_connection_tests(
             Some("FACEBOOK_LOGIN_IN_PROGRESS"),
         )),
         crate::browser::FacebookSessionState::FacebookCheckpoint
-        | crate::browser::FacebookSessionState::FacebookMfaRequired => checks.push(check_warn(
+        | crate::browser::FacebookSessionState::FacebookMfaRequired
+        | crate::browser::FacebookSessionState::FacebookTemporaryRestriction
+        | crate::browser::FacebookSessionState::FacebookDisabledAccount => checks.push(check_warn(
             "facebook_session",
             "Facebook session",
             "Manual Facebook action required",
@@ -395,6 +423,24 @@ mod tests {
         }
     }
 
+    use crate::runtime::FacebookRuntime;
+    use std::sync::Arc;
+
+    fn sample_facebook_runtime() -> Arc<FacebookRuntime> {
+        let runtime_svc = Arc::new(crate::browser::BrowserRuntimeService::new(false));
+        let daemon = Arc::new(crate::browser::SidecarDaemon::new(std::path::PathBuf::new()));
+        let manager = Arc::new(crate::browser::BrowserManager::new(runtime_svc, daemon));
+        FacebookRuntime::new(manager)
+    }
+
+    fn payload_with_runtime(
+        state: &AppState,
+        browser: &BrowserManagerSnapshot,
+    ) -> HeartbeatBrowserPayload {
+        let rt = sample_facebook_runtime();
+        build_heartbeat_browser_fields(state, browser, &rt)
+    }
+
     fn sample_browser_snapshot(status: BrowserRuntimeStatus) -> BrowserManagerSnapshot {
         BrowserManagerSnapshot::from_runtime(&BrowserRuntimeSnapshot {
             status,
@@ -414,7 +460,7 @@ mod tests {
     fn heartbeat_payload_uses_snake_case_facebook_state() {
         let state = sample_app_state(ConnectionState::Connected);
         let browser = sample_browser_snapshot(BrowserRuntimeStatus::BrowserReady);
-        let payload = build_heartbeat_browser_fields(&state, &browser);
+        let payload = payload_with_runtime(&state, &browser);
         assert_eq!(
             payload.facebook_session_state,
             "facebook_not_checked"
@@ -427,7 +473,7 @@ mod tests {
         let state = sample_app_state(ConnectionState::Connected);
         let mut browser = sample_browser_snapshot(BrowserRuntimeStatus::BrowserError);
         browser.last_error_code = Some("BROWSER_CRASHED".into());
-        let payload = build_heartbeat_browser_fields(&state, &browser);
+        let payload = payload_with_runtime(&state, &browser);
         assert_eq!(payload.connector_status, "connector_ready");
         assert_eq!(payload.browser_status, "browser_error");
         assert_eq!(
@@ -438,7 +484,7 @@ mod tests {
 
     #[test]
     fn heartbeat_request_serializes_snake_case_browser_fields() {
-        let payload = build_heartbeat_browser_fields(
+        let payload = payload_with_runtime(
             &sample_app_state(ConnectionState::Idle),
             &sample_browser_snapshot(BrowserRuntimeStatus::BrowserReady),
         );
@@ -459,6 +505,16 @@ mod tests {
             current_browser_url_category: payload.current_browser_url_category,
             last_browser_check_at: payload.last_browser_check_at,
             last_browser_error_code: payload.last_browser_error_code,
+            current_facebook_account: payload.current_facebook_account,
+            session_state: payload.session_state,
+            marketplace_ready: payload.marketplace_ready,
+            messenger_ready: payload.messenger_ready,
+            notifications_ready: payload.notifications_ready,
+            browser_pid: payload.browser_pid,
+            profile_version: payload.profile_version,
+            current_service: payload.current_service,
+            last_health_check: payload.last_health_check,
+            last_restart: payload.last_restart,
         };
         let json = serde_json::to_value(&request).expect("serialize heartbeat");
         assert_eq!(json["facebook_session_state"], "facebook_not_checked");
@@ -504,7 +560,7 @@ mod tests {
         browser.facebook_session.state = FacebookSessionState::FacebookLoggedIn;
         browser.facebook_session.current_url =
             Some("https://www.facebook.com/groups/secret-group-id".into());
-        let payload = build_heartbeat_browser_fields(&state, &browser);
+        let payload = payload_with_runtime(&state, &browser);
         assert_eq!(payload.current_browser_url_category, "facebook_other");
         assert!(!payload.current_browser_url_category.contains("secret"));
     }
@@ -516,7 +572,7 @@ mod tests {
         browser.profile_status = ProfileStatus::ProfileLocked;
         browser.marketplace.status = MarketplaceStatus::MarketplaceLoginRequired;
         browser.facebook_session.state = FacebookSessionState::FacebookLoggedOut;
-        let payload = build_heartbeat_browser_fields(&state, &browser);
+        let payload = payload_with_runtime(&state, &browser);
         assert_eq!(payload.connector_status, "connector_reconnecting");
         assert_eq!(payload.browser_status, "browser_crashed");
         assert_eq!(payload.profile_status, "profile_locked");

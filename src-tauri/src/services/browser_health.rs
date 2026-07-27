@@ -6,6 +6,7 @@ use std::time::Duration;
 use tracing::{debug, info, warn};
 
 use crate::browser::BrowserManager;
+use crate::runtime::FacebookRuntime;
 
 const HEALTH_POLL_INTERVAL: Duration = Duration::from_secs(30);
 const INITIAL_HEALTH_BACKOFF: Duration = Duration::from_secs(5);
@@ -15,13 +16,17 @@ pub struct BrowserHealthService {
 }
 
 impl BrowserHealthService {
-    pub fn spawn(browser_manager: Arc<BrowserManager>) -> Arc<Self> {
+    pub fn spawn(
+        browser_manager: Arc<BrowserManager>,
+        facebook_runtime: Arc<FacebookRuntime>,
+    ) -> Arc<Self> {
         let service = Arc::new(Self {
             shutdown: Arc::new(AtomicBool::new(false)),
         });
 
         let shutdown_flag = service.shutdown.clone();
         let manager = browser_manager.clone();
+        let runtime = facebook_runtime.clone();
 
         thread::spawn(move || {
             let mut backoff = INITIAL_HEALTH_BACKOFF;
@@ -50,7 +55,7 @@ impl BrowserHealthService {
                             }
                             if updated.status == crate::browser::BrowserRuntimeStatus::BrowserReady
                             {
-                                let _ = manager.detect_facebook_session();
+                                let _ = runtime.session.check_session();
                             }
                         }
                         Err(err) => {

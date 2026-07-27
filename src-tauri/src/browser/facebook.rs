@@ -11,6 +11,8 @@ pub enum FacebookSessionState {
     FacebookCheckpoint,
     FacebookMfaRequired,
     FacebookSessionExpired,
+    FacebookTemporaryRestriction,
+    FacebookDisabledAccount,
     FacebookError,
 }
 
@@ -24,6 +26,8 @@ impl FacebookSessionState {
             Self::FacebookCheckpoint => "Facebook security checkpoint",
             Self::FacebookMfaRequired => "Facebook MFA required",
             Self::FacebookSessionExpired => "Facebook session expired",
+            Self::FacebookTemporaryRestriction => "Facebook temporary restriction",
+            Self::FacebookDisabledAccount => "Facebook account disabled",
             Self::FacebookError => "Facebook session error",
         }
     }
@@ -38,6 +42,12 @@ impl FacebookSessionState {
             ),
             Self::FacebookMfaRequired => {
                 Some("Complete two-factor authentication manually in the browser window.")
+            }
+            Self::FacebookTemporaryRestriction => Some(
+                "Facebook has temporarily restricted this account — resolve in the browser window.",
+            ),
+            Self::FacebookDisabledAccount => {
+                Some("This Facebook account is disabled — resolve with Facebook support.")
             }
             Self::FacebookLoginInProgress => {
                 Some("Finish signing in manually — do not close the browser.")
@@ -78,6 +88,8 @@ pub struct SidecarFacebookDetection {
     pub current_url: String,
     pub marketplace_accessible: bool,
     pub reason_code: String,
+    #[serde(default)]
+    pub display_name: Option<String>,
 }
 
 pub fn parse_facebook_state(raw: &str) -> FacebookSessionState {
@@ -88,6 +100,8 @@ pub fn parse_facebook_state(raw: &str) -> FacebookSessionState {
         "facebook_checkpoint" => FacebookSessionState::FacebookCheckpoint,
         "facebook_mfa_required" => FacebookSessionState::FacebookMfaRequired,
         "facebook_session_expired" => FacebookSessionState::FacebookSessionExpired,
+        "facebook_temporary_restriction" => FacebookSessionState::FacebookTemporaryRestriction,
+        "facebook_disabled_account" => FacebookSessionState::FacebookDisabledAccount,
         "facebook_error" => FacebookSessionState::FacebookError,
         _ => FacebookSessionState::FacebookNotChecked,
     }
@@ -133,6 +147,7 @@ mod tests {
             current_url: url.into(),
             marketplace_accessible: marketplace,
             reason_code: reason.into(),
+            display_name: None,
         }
     }
 

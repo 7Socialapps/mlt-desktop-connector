@@ -6,6 +6,7 @@ mod device;
 mod lifecycle;
 mod logging;
 mod marketplace;
+mod runtime;
 mod services;
 mod state;
 mod version;
@@ -35,6 +36,7 @@ use services::reconnect::ReconnectService;
 use browser::{
     BrowserActivePage, BrowserManagerSnapshot, BrowserRuntimeService, BrowserRuntimeSnapshot,
 };
+use runtime::FacebookRuntime;
 
 use state::{AppState, ConnectionState};
 
@@ -47,6 +49,7 @@ struct AppServices {
     polling: Arc<PollingService>,
     browser_runtime: Arc<BrowserRuntimeService>,
     browser_manager: Arc<browser::BrowserManager>,
+    facebook_runtime: Arc<FacebookRuntime>,
 }
 
 #[tauri::command]
@@ -196,6 +199,7 @@ async fn run_connection_tests_cmd(
             &services.state,
             services.browser_manager.as_ref(),
             services.browser_runtime.as_ref(),
+            services.facebook_runtime.as_ref(),
         )
         .await,
     )
@@ -301,12 +305,43 @@ pub fn run() {
 
             let browser_runtime = browser::init(browser::is_browser_enabled());
             let browser_manager = browser::init_manager(browser_runtime.clone());
+            let facebook_runtime = FacebookRuntime::new(browser_manager.clone());
+
+            {
+                let manager_for_delegates = browser_manager.clone();
+                let rt_marketplace = facebook_runtime.clone();
+                let rt_session = facebook_runtime.clone();
+                browser_manager.set_runtime_delegates(
+                    Arc::new(move |create_vehicle| {
+                        if create_vehicle {
+                            rt_marketplace
+                                .marketplace
+                                .open_create_listing()
+                                .map_err(|e| e.to_string())?;
+                        } else {
+                            rt_marketplace
+                                .marketplace
+                                .open_marketplace()
+                                .map_err(|e| e.to_string())?;
+                        }
+                        Ok(manager_for_delegates.get_status())
+                    }),
+                    Arc::new(move || {
+                        rt_session
+                            .session
+                            .check_session()
+                            .map_err(|e| e.to_string())?;
+                        Ok(rt_session.bus.browser_manager().get_status())
+                    }),
+                );
+            }
 
             let heartbeat = HeartbeatService::spawn(
                 app.handle().clone(),
                 state.clone(),
                 api_client.clone(),
                 browser_manager.clone(),
+                facebook_runtime.clone(),
             );
             let polling = PollingService::spawn(
                 app.handle().clone(),
@@ -396,7 +431,7 @@ pub fn run() {
             });
 
             let browser_health =
-                BrowserHealthService::spawn(browser_manager.clone());
+                BrowserHealthService::spawn(browser_manager.clone(), facebook_runtime.clone());
 
             let shutdown = Arc::new(ShutdownCoordinator::new(
                 heartbeat.clone(),
@@ -418,6 +453,7 @@ pub fn run() {
                 polling,
                 browser_runtime,
                 browser_manager,
+                facebook_runtime,
             });
 
             info!(

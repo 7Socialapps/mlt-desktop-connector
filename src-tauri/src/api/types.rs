@@ -38,6 +38,8 @@ pub enum FacebookSessionState {
     FacebookCheckpoint,
     FacebookMfaRequired,
     FacebookSessionExpired,
+    FacebookTemporaryRestriction,
+    FacebookDisabledAccount,
     FacebookError,
     /// Legacy values retained for backward-compatible deserialization.
     #[serde(alias = "unknown")]
@@ -60,6 +62,8 @@ impl FacebookSessionState {
             Self::FacebookCheckpoint => "facebook_checkpoint",
             Self::FacebookMfaRequired => "facebook_mfa_required",
             Self::FacebookSessionExpired | Self::Expired => "facebook_session_expired",
+            Self::FacebookTemporaryRestriction => "facebook_temporary_restriction",
+            Self::FacebookDisabledAccount => "facebook_disabled_account",
             Self::FacebookError => "facebook_error",
         }
     }
@@ -146,6 +150,26 @@ pub struct HeartbeatRequest {
     pub last_browser_check_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_browser_error_code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current_facebook_account: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_state: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub marketplace_ready: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub messenger_ready: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notifications_ready: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub browser_pid: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub profile_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current_service: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_health_check: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_restart: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

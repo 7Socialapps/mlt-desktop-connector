@@ -14,6 +14,7 @@ use crate::credentials::{
     self, ensure_access_token, handle_revoked_device, has_access_token, is_paired,
     load_credentials,
 };
+use crate::runtime::FacebookRuntime;
 use crate::services::connection_test::build_heartbeat_browser_fields;
 use crate::state::{AppState, ConnectionState};
 use crate::version::{CONNECTOR_VERSION, DEFAULT_CAPABILITIES};
@@ -33,6 +34,7 @@ impl HeartbeatService {
         state: Arc<Mutex<AppState>>,
         client: Arc<ConnectorApiClient>,
         browser_manager: Arc<BrowserManager>,
+        facebook_runtime: Arc<FacebookRuntime>,
     ) -> Arc<Self> {
         let service = Arc::new(Self {
             shutdown: Arc::new(AtomicBool::new(false)),
@@ -41,6 +43,7 @@ impl HeartbeatService {
 
         let shutdown_flag = service.shutdown.clone();
         let wake_flag = service.wake.clone();
+        let fb_runtime = facebook_runtime.clone();
 
         tauri::async_runtime::spawn(async move {
             let mut backoff = INITIAL_BACKOFF;
@@ -100,7 +103,7 @@ impl HeartbeatService {
                     }
                 }
 
-                match send_heartbeat(&client, &state, &browser_manager).await {
+                match send_heartbeat(&client, &state, &browser_manager, &fb_runtime).await {
                     Ok(at) => {
                         backoff = INITIAL_BACKOFF;
                         {
@@ -166,6 +169,7 @@ async fn send_heartbeat(
     client: &ConnectorApiClient,
     state: &Arc<Mutex<AppState>>,
     browser_manager: &Arc<BrowserManager>,
+    facebook_runtime: &Arc<FacebookRuntime>,
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
     let creds = load_credentials()?.ok_or("missing credentials")?;
     if creds.access_token.is_empty() {
@@ -174,7 +178,7 @@ async fn send_heartbeat(
     let (device_id, browser_fields) = {
         let guard = state.lock();
         let browser_snapshot = browser_manager.snapshot();
-        let fields = build_heartbeat_browser_fields(&guard, &browser_snapshot);
+        let fields = build_heartbeat_browser_fields(&guard, &browser_snapshot, facebook_runtime);
         (guard.device_id.to_string(), fields)
     };
 
@@ -195,6 +199,16 @@ async fn send_heartbeat(
         current_browser_url_category: browser_fields.current_browser_url_category,
         last_browser_check_at: browser_fields.last_browser_check_at,
         last_browser_error_code: browser_fields.last_browser_error_code,
+        current_facebook_account: browser_fields.current_facebook_account,
+        session_state: browser_fields.session_state,
+        marketplace_ready: browser_fields.marketplace_ready,
+        messenger_ready: browser_fields.messenger_ready,
+        notifications_ready: browser_fields.notifications_ready,
+        browser_pid: browser_fields.browser_pid,
+        profile_version: browser_fields.profile_version,
+        current_service: browser_fields.current_service,
+        last_health_check: browser_fields.last_health_check,
+        last_restart: browser_fields.last_restart,
     };
 
     let response = client

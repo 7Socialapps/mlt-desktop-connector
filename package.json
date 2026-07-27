@@ -14,7 +14,7 @@
     "browser:install": "playwright install chromium",
     "browser:detect": "node browser-sidecar/cli.mjs detect",
     "browser:test": "node browser-sidecar/cli.mjs launch-test && node browser-sidecar/cli.mjs close-test",
-    "test": "node browser-sidecar/facebook-detector.test.mjs && node browser-sidecar/marketplace-evaluator.test.mjs && cd src-tauri && cargo test"
+    "test": "node browser-sidecar/facebook-detector.test.mjs && node browser-sidecar/marketplace-evaluator.test.mjs && node browser-sidecar/messenger-evaluator.test.mjs && node browser-sidecar/notifications-evaluator.test.mjs && node browser-sidecar/navigation.test.mjs && cd src-tauri && cargo test"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.4.0",
