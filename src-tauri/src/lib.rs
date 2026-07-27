@@ -5,6 +5,7 @@ mod credentials;
 mod device;
 mod lifecycle;
 mod logging;
+mod marketplace;
 mod services;
 mod state;
 mod version;

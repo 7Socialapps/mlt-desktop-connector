@@ -6,6 +6,7 @@ use thiserror::Error;
 use tracing::warn;
 
 use crate::config::AppConfig;
+use crate::marketplace::payload::VehicleJobPayload;
 
 use super::types::*;
 
@@ -278,6 +279,36 @@ impl ConnectorApiClient {
             &request,
             &AuthHeaders {
                 device_access_token: Some(device_access_token.to_string()),
+                ..AuthHeaders::default()
+            },
+        )
+        .await
+    }
+
+    pub async fn get_payload(
+        &self,
+        request: GetPayloadRequest,
+        scoped_job_token: &str,
+    ) -> Result<VehicleJobPayload, ApiClientError> {
+        self.post(
+            &request,
+            &AuthHeaders {
+                scoped_job_token: Some(scoped_job_token.to_string()),
+                ..AuthHeaders::default()
+            },
+        )
+        .await
+    }
+
+    pub async fn fail_job(
+        &self,
+        request: FailJobRequest,
+        scoped_job_token: &str,
+    ) -> Result<serde_json::Value, ApiClientError> {
+        self.post(
+            &request,
+            &AuthHeaders {
+                scoped_job_token: Some(scoped_job_token.to_string()),
                 ..AuthHeaders::default()
             },
         )

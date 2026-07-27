@@ -4,13 +4,17 @@ use std::time::Duration;
 
 use parking_lot::Mutex;
 use tauri::{AppHandle, Emitter};
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use crate::api::types::{
-    ClaimJobRequest, CompleteJobRequest, PollJobsRequest, UpdateStatusRequest,
+    ClaimJobRequest, CompleteJobRequest, FailJobRequest, GetPayloadRequest, PollJobsRequest,
+    UpdateStatusRequest,
 };
 use crate::api::ConnectorApiClient;
 use crate::credentials::{ensure_access_token, has_access_token, is_paired, load_credentials};
+use crate::marketplace::payload::{
+    reject_unsupported_execution_mode, validate_and_normalize, ExecutionMode, VehicleJobPayload,
+};
 use crate::state::{AppState, ConnectionState};
 use crate::version::CONNECTOR_VERSION;
 
@@ -190,8 +194,84 @@ async fn process_job(
     info!(
         job_id,
         scoped_token_len = scoped.len(),
-        "job claimed — beginning simulated progress updates"
+        "job claimed — fetching payload"
     );
+
+    let mut payload = client
+        .get_payload(
+            GetPayloadRequest {
+                action: "get_payload".into(),
+                job_id: job_id.to_string(),
+            },
+            &scoped,
+        )
+        .await
+        .map_err(|e| format!("get_payload failed for {job_id}: {e}"))?;
+
+    payload.scoped_job_token = Some(scoped.clone());
+
+    if let Some(reject) = reject_unsupported_execution_mode(payload.execution_mode) {
+        warn!(
+            job_id,
+            execution_mode = payload.execution_mode.as_str(),
+            code = %reject.code,
+            "rejecting job before browser — execution mode not supported in M3"
+        );
+        fail_job(client, job_id, &scoped, &reject.code, &reject.message).await?;
+        return Ok(());
+    }
+
+    let validation_errors = validate_and_normalize(&mut payload);
+    if !validation_errors.is_empty() {
+        let summary = validation_errors
+            .iter()
+            .map(|e| format!("{}:{}", e.field, e.code))
+            .collect::<Vec<_>>()
+            .join(", ");
+        warn!(job_id, errors = %summary, "payload validation failed before browser");
+        fail_job(
+            client,
+            job_id,
+            &scoped,
+            "PAYLOAD_VALIDATION_FAILED",
+            &format!("Payload validation failed: {summary}"),
+        )
+        .await?;
+        return Ok(());
+    }
+
+    if payload.is_transport_test() {
+        return run_transport_test_flow(client, job_id, &scoped).await;
+    }
+
+    if matches!(payload.execution_mode, ExecutionMode::PrepareForReview) {
+        info!(
+            job_id,
+            execution_mode = payload.execution_mode.as_str(),
+            inventory_id = %payload.inventory_id,
+            "M3 automation not yet implemented — validated payload queued for future worker (no Facebook form opened)"
+        );
+        fail_job(
+            client,
+            job_id,
+            &scoped,
+            "M3_AUTOMATION_NOT_IMPLEMENTED",
+            "M3 automation not yet implemented",
+        )
+        .await?;
+        return Ok(());
+    }
+
+    warn!(job_id, "unexpected execution mode after validation");
+    Ok(())
+}
+
+async fn run_transport_test_flow(
+    client: &ConnectorApiClient,
+    job_id: &str,
+    scoped: &str,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    info!(job_id, "transport_test — beginning simulated progress updates");
 
     let steps = [
         ("browser_opening", 10u8, "Opening browser (simulated)"),
@@ -210,7 +290,7 @@ async fn process_job(
                     progress,
                     current_step: step.into(),
                 },
-                &scoped,
+                scoped,
             )
             .await
             .map_err(|e| format!("update_status failed for {job_id} at {status}: {e}"))?;
@@ -225,11 +305,82 @@ async fn process_job(
                 job_id: job_id.to_string(),
                 listing_url: "https://www.facebook.com/marketplace/item/9999999999".into(),
             },
-            &scoped,
+            scoped,
         )
         .await
         .map_err(|e| format!("complete_job failed for {job_id}: {e}"))?;
 
     info!(job_id, "job completed — transport test finished (dashboard should show posted)");
     Ok(())
+}
+
+async fn fail_job(
+    client: &ConnectorApiClient,
+    job_id: &str,
+    scoped: &str,
+    error_code: &str,
+    error_message: &str,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    client
+        .fail_job(
+            FailJobRequest {
+                action: "fail_job".into(),
+                job_id: job_id.to_string(),
+                error_code: error_code.to_string(),
+                error_message: error_message.to_string(),
+                user_message: Some(error_message.to_string()),
+            },
+            scoped,
+        )
+        .await
+        .map_err(|e| format!("fail_job failed for {job_id}: {e}"))?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::marketplace::payload::types::ListingOptions;
+
+    #[test]
+    fn transport_test_payload_routes_to_simulated_flow_flag() {
+        let payload = VehicleJobPayload {
+            contract_version: 1,
+            job_id: "job-test".into(),
+            user_id: String::new(),
+            dealership_id: String::new(),
+            inventory_id: String::new(),
+            inventory_source: String::new(),
+            year: String::new(),
+            make: String::new(),
+            model: String::new(),
+            trim: String::new(),
+            body_style: String::new(),
+            vehicle_type: String::new(),
+            condition: String::new(),
+            price: String::new(),
+            mileage: String::new(),
+            vin: String::new(),
+            stock_number: String::new(),
+            exterior_color: String::new(),
+            interior_color: String::new(),
+            transmission: String::new(),
+            drivetrain: String::new(),
+            fuel_type: String::new(),
+            title: String::new(),
+            description: String::new(),
+            location: String::new(),
+            ordered_image_urls: vec![],
+            listing_options: ListingOptions::default(),
+            posting_preferences: serde_json::json!({}),
+            execution_mode: ExecutionMode::TransportTest,
+            idempotency_key: String::new(),
+            source_metadata: serde_json::json!({}),
+            expires_at: String::new(),
+            test: true,
+            label: Some("Transport test".into()),
+            scoped_job_token: None,
+        };
+        assert!(payload.is_transport_test());
+    }
 }

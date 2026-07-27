@@ -267,6 +267,24 @@ pub struct ClaimJobResponse {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct GetPayloadRequest {
+    pub action: String,
+    pub job_id: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FailJobRequest {
+    pub action: String,
+    pub job_id: String,
+    pub error_code: String,
+    pub error_message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct UpdateStatusRequest {
     pub action: String,
     pub job_id: String,
