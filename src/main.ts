@@ -654,9 +654,12 @@ async function main() {
       chromiumProvision = event.payload;
       refreshSafe();
     }),
-  ]);
+  ]).catch((err) => {
+    app.innerHTML = `<section class="card"><h1>MLT Desktop Connector</h1><p class="error">Event listener setup failed: ${String(err)}</p></section>`;
+  });
 
-  refreshSafe();
+  // Defer the first IPC round-trip until after the webview event loop is idle.
+  window.setTimeout(refreshSafe, 0);
   setInterval(refreshSafe, 5_000);
 }
 

@@ -53,6 +53,8 @@ use state::{AppState, ConnectionState};
 
 struct PendingDeepLinks(Mutex<Vec<String>>);
 
+struct PendingDeferredStartup(Mutex<Option<DeferredStartup>>);
+
 struct AppServices {
     shutdown: Arc<ShutdownCoordinator>,
     state: Arc<Mutex<AppState>>,
@@ -478,18 +480,13 @@ pub fn run() {
                 browser_health,
                 browser_manager.clone(),
             ));
+            let shutdown_for_tray = shutdown.clone();
+            let deep_link_for_listeners = deep_link.clone();
             spawn_sleep_resume_monitor(app.handle().clone(), state.clone(), heartbeat.clone());
 
-            build_tray(app.handle(), shutdown.clone(), state.clone())?;
-            build_main_window(app.handle())?;
-            startup_log("main window shown");
-
+            // Register managed state before creating the webview so the first IPC
+            // invoke from the frontend cannot race setup or block the main thread.
             app.manage(PendingDeepLinks(Mutex::new(Vec::new())));
-
-            register_deep_links_if_supported(app.handle());
-            enqueue_startup_deep_links(app.handle(), &deep_link);
-            listen_for_deep_links(app.handle(), deep_link.clone());
-
             app.manage(AppServices {
                 shutdown,
                 state: state.clone(),
@@ -503,14 +500,7 @@ pub fn run() {
                 deep_link: deep_link.clone(),
                 chromium_provision: chromium_provision.clone(),
             });
-
-            if let Some(pending) = app.try_state::<PendingDeepLinks>() {
-                for url in pending.0.lock().drain(..) {
-                    deep_link.enqueue(url);
-                }
-            }
-
-            DeferredStartup {
+            app.manage(PendingDeferredStartup(Mutex::new(Some(DeferredStartup {
                 app: app.handle().clone(),
                 state: state.clone(),
                 api_client: api_client.clone(),
@@ -521,8 +511,23 @@ pub fn run() {
                 chromium_provision,
                 paired,
                 needs_reconnect,
+            }))));
+
+            build_tray(app.handle(), shutdown_for_tray, state.clone())?;
+            build_main_window(app.handle())?;
+            startup_log("main window shown");
+
+            register_deep_links_if_supported(app.handle());
+            enqueue_startup_deep_links(app.handle(), &deep_link_for_listeners);
+            listen_for_deep_links(app.handle(), deep_link_for_listeners);
+
+            if let Some(pending) = app.try_state::<PendingDeepLinks>() {
+                if let Some(services) = app.try_state::<AppServices>() {
+                    for url in pending.0.lock().drain(..) {
+                        services.deep_link.enqueue(url);
+                    }
+                }
             }
-            .spawn();
 
             info!(
                 version = version::CONNECTOR_VERSION,
@@ -531,7 +536,7 @@ pub fn run() {
                 paired,
                 "MLT Desktop Connector shell ready"
             );
-            startup_log("setup complete — deferred init scheduled");
+            startup_log("setup complete — deferred init queued for Ready");
 
             Ok(())
         })
@@ -569,16 +574,27 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app_handle, event| {
-            if let RunEvent::ExitRequested { api, .. } = event {
-                if is_shutting_down() {
-                    return;
+            match event {
+                RunEvent::Ready => {
+                    if let Some(pending) = app_handle.try_state::<PendingDeferredStartup>() {
+                        if let Some(deferred) = pending.0.lock().take() {
+                            startup_log("RunEvent::Ready — starting deferred init");
+                            deferred.spawn();
+                        }
+                    }
                 }
-                api.prevent_exit();
-                if let Some(services) = app_handle.try_state::<AppServices>() {
-                    services.shutdown.graceful_shutdown(&services.state);
+                RunEvent::ExitRequested { api, .. } => {
+                    if is_shutting_down() {
+                        return;
+                    }
+                    api.prevent_exit();
+                    if let Some(services) = app_handle.try_state::<AppServices>() {
+                        services.shutdown.graceful_shutdown(&services.state);
+                    }
+                    info!("exit requested — services drained");
+                    app_handle.exit(0);
                 }
-                info!("exit requested — services drained");
-                app_handle.exit(0);
+                _ => {}
             }
         });
 }

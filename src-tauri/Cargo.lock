@@ -2142,7 +2142,7 @@ dependencies = [
 
 [[package]]
 name = "mlt-desktop-connector"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "aes-gcm",
  "anyhow",
