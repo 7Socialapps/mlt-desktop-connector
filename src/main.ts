@@ -148,6 +148,13 @@ function computeWelcomeStep(
   browser: BrowserManagerSnapshot,
   runtime: RuntimeStatus,
 ): { step: WelcomeStep; title: string; detail: string } {
+  if (status.connection_state === "starting") {
+    return {
+      step: "checking",
+      title: "Initializing Desktop Connector",
+      detail: "Starting background services. This usually takes a few seconds.",
+    };
+  }
   if (chromiumProvision.active || (!browser.chromium_installed && browser.enabled)) {
     return {
       step: "download_browser",
@@ -631,16 +638,26 @@ async function refresh() {
 }
 
 async function main() {
-  await refresh();
-  await listen("connector://status-changed", () => void refresh());
-  await listen("connector://pairing-changed", () => void refresh());
-  await listen("connector://browser-changed", () => void refresh());
-  await listen("connector://deep-link-changed", () => void refresh());
-  await listen<ChromiumProvisionState>("connector://chromium-provision", (event) => {
-    chromiumProvision = event.payload;
-    void refresh();
-  });
-  setInterval(() => void refresh(), 5_000);
+  const refreshSafe = () => {
+    void refresh().catch((err) => {
+      app.innerHTML = `<section class="card"><h1>MLT Desktop Connector</h1><p class="error">Failed to load status: ${String(err)}</p><p class="helper">The app is still running. Try again in a moment or use Open Logs Folder after the UI loads.</p></section>`;
+    });
+  };
+
+  void Promise.all([
+    listen("connector://status-changed", refreshSafe),
+    listen("connector://pairing-changed", refreshSafe),
+    listen("connector://browser-changed", refreshSafe),
+    listen("connector://deep-link-changed", refreshSafe),
+    listen("connector://startup-ready", refreshSafe),
+    listen<ChromiumProvisionState>("connector://chromium-provision", (event) => {
+      chromiumProvision = event.payload;
+      refreshSafe();
+    }),
+  ]);
+
+  refreshSafe();
+  setInterval(refreshSafe, 5_000);
 }
 
 void main();

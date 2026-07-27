@@ -10,6 +10,7 @@ mod marketplace;
 mod protocol;
 mod runtime;
 mod services;
+mod startup;
 mod state;
 mod version;
 
@@ -36,6 +37,7 @@ use services::{
     DeepLinkUiState, HeartbeatService, PairingCoordinator, PairingUiState, PollingService,
 };
 use services::reconnect::ReconnectService;
+use startup::{mark_startup_begin, startup_log, DeferredStartup};
 use browser::{
     BrowserActivePage, BrowserManagerSnapshot, BrowserRuntimeService, BrowserRuntimeSnapshot,
 };
@@ -351,11 +353,15 @@ pub fn run() {
             }
         }))
         .setup(move |app| {
+            mark_startup_begin();
+
             let _log_guard = logging::init_logging(app.handle())
                 .map_err(|e| -> Box<dyn std::error::Error> { e.to_string().into() })?;
+            startup_log("logging ready");
 
             let _cred_store = credentials::init(app.handle())
                 .map_err(|e| -> Box<dyn std::error::Error> { e.to_string().into() })?;
+            startup_log("credential store ready");
 
             if let Ok(resource_dir) = app.path().resource_dir() {
                 browser::set_resource_root(resource_dir);
@@ -396,6 +402,7 @@ pub fn run() {
             }));
 
             mark_instance_ready(&state);
+            startup_log("core state ready");
 
             let browser_runtime = browser::init(browser::is_browser_enabled());
             let browser_manager = browser::init_manager(browser_runtime.clone());
@@ -450,100 +457,17 @@ pub fn run() {
                 polling.clone(),
             ));
 
-            let heartbeat_for_deep_link = heartbeat.clone();
             let deep_link = Arc::new(DeepLinkCoordinator::new(
                 app.handle().clone(),
                 state.clone(),
                 pairing.clone(),
                 facebook_runtime.clone(),
                 launch_sessions,
-                heartbeat_for_deep_link,
+                heartbeat.clone(),
             ));
 
             let chromium_provision =
                 Arc::new(ChromiumProvisionService::new(browser_runtime.clone()));
-            chromium_provision.start_if_needed(app.handle().clone());
-
-            app.manage(PendingDeepLinks(Mutex::new(Vec::new())));
-
-            register_deep_links_if_supported(app.handle());
-            enqueue_startup_deep_links(app.handle(), &deep_link);
-            listen_for_deep_links(app.handle(), deep_link.clone());
-
-            {
-                let mut guard = state.lock();
-                if paired {
-                    enable_polling_if_authenticated(polling.as_ref(), &mut guard);
-                    guard.connection_state = ConnectionState::Idle;
-                } else if needs_reconnect {
-                    guard.connection_state = ConnectionState::Offline;
-                } else {
-                    guard.connection_state = ConnectionState::Offline;
-                }
-            }
-
-            let restore_client = api_client.clone();
-            let restore_state = state.clone();
-            let restore_app = app.handle().clone();
-            tauri::async_runtime::spawn(async move {
-                if !credentials::is_paired() {
-                    return;
-                }
-                if credentials::has_access_token() {
-                    return;
-                }
-                match credentials::ensure_access_token(&restore_client).await {
-                    Ok(true) => {
-                        let mut guard = restore_state.lock();
-                        guard.paired = true;
-                        guard.needs_reconnect = false;
-                        guard.last_error = None;
-                        guard.connection_state = ConnectionState::Idle;
-                        drop(guard);
-                        let _ = restore_app.emit(
-                            "connector://status-changed",
-                            restore_state.lock().status_snapshot(),
-                        );
-                    }
-                    Ok(false) => {
-                        let mut guard = restore_state.lock();
-                        guard.paired = false;
-                        guard.needs_reconnect = true;
-                        if guard.last_error.is_none() {
-                            guard.last_error = credentials::needs_reconnect_message();
-                        }
-                        guard.connection_state = ConnectionState::Offline;
-                        drop(guard);
-                        let _ = restore_app.emit(
-                            "connector://status-changed",
-                            restore_state.lock().status_snapshot(),
-                        );
-                    }
-                    Err(err) => {
-                        tracing::warn!(error = %err, "credential bootstrap failed");
-                        credentials::mark_needs_reconnect(
-                            "Reconnect device — stored credentials are unavailable. Start pairing again.",
-                        );
-                        let mut guard = restore_state.lock();
-                        guard.paired = false;
-                        guard.needs_reconnect = true;
-                        guard.last_error = credentials::needs_reconnect_message();
-                        guard.connection_state = ConnectionState::Offline;
-                    }
-                }
-            });
-
-            let browser_init = browser_manager.clone();
-            let browser_app = app.handle().clone();
-            tauri::async_runtime::spawn(async move {
-                if let Err(err) = browser_init.initialize(browser_app.clone()) {
-                    tracing::warn!(error = %err, "browser manager initialization failed");
-                }
-                let _ = browser_app.emit(
-                    "connector://browser-changed",
-                    browser_init.get_status(),
-                );
-            });
 
             let browser_health =
                 BrowserHealthService::spawn(browser_manager.clone(), facebook_runtime.clone());
@@ -558,19 +482,26 @@ pub fn run() {
 
             build_tray(app.handle(), shutdown.clone(), state.clone())?;
             build_main_window(app.handle())?;
+            startup_log("main window shown");
+
+            app.manage(PendingDeepLinks(Mutex::new(Vec::new())));
+
+            register_deep_links_if_supported(app.handle());
+            enqueue_startup_deep_links(app.handle(), &deep_link);
+            listen_for_deep_links(app.handle(), deep_link.clone());
 
             app.manage(AppServices {
                 shutdown,
                 state: state.clone(),
                 api_client: api_client.clone(),
-                heartbeat,
+                heartbeat: heartbeat.clone(),
                 pairing,
-                polling,
+                polling: polling.clone(),
                 browser_runtime,
-                browser_manager,
+                browser_manager: browser_manager.clone(),
                 facebook_runtime,
                 deep_link: deep_link.clone(),
-                chromium_provision,
+                chromium_provision: chromium_provision.clone(),
             });
 
             if let Some(pending) = app.try_state::<PendingDeepLinks>() {
@@ -578,15 +509,29 @@ pub fn run() {
                     deep_link.enqueue(url);
                 }
             }
-            deep_link.drain_pending();
+
+            DeferredStartup {
+                app: app.handle().clone(),
+                state: state.clone(),
+                api_client: api_client.clone(),
+                browser_manager,
+                heartbeat,
+                polling,
+                deep_link,
+                chromium_provision,
+                paired,
+                needs_reconnect,
+            }
+            .spawn();
 
             info!(
                 version = version::CONNECTOR_VERSION,
                 environment = %config.environment,
                 device_id = %device_id,
                 paired,
-                "MLT Desktop Connector started"
+                "MLT Desktop Connector shell ready"
             );
+            startup_log("setup complete — deferred init scheduled");
 
             Ok(())
         })
