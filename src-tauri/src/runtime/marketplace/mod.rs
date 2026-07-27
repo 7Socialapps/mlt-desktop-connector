@@ -14,6 +14,7 @@ use super::navigation::{NavigationDestination, NavigationService};
 use super::session::FacebookSessionService;
 
 const MARKETPLACE_TIMEOUT: Duration = Duration::from_secs(90);
+const VERIFY_TIMEOUT: Duration = Duration::from_secs(45);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -35,6 +36,19 @@ impl Default for MarketplaceServiceSnapshot {
             screenshot_path: None,
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct VehicleCreateVerification {
+    pub ready: bool,
+    pub reason_code: String,
+    pub current_url: Option<String>,
+    pub page_title: Option<String>,
+    pub checked_at: Option<String>,
+    pub screenshot_path: Option<String>,
+    pub signals_met: Vec<String>,
+    pub signals_missing: Vec<String>,
 }
 
 pub struct MarketplaceService {
@@ -73,6 +87,105 @@ impl MarketplaceService {
 
     pub fn open_create_listing(&self) -> Result<MarketplaceServiceSnapshot, String> {
         self.open_destination(NavigationDestination::MarketplaceCreateVehicle, true)
+    }
+
+    /// Navigate to vehicle create route via NavigationService, then verify form readiness.
+    pub fn open_vehicle_create_route(&self) -> Result<MarketplaceServiceSnapshot, String> {
+        {
+            let mut snap = self.snapshot.lock();
+            snap.status = MarketplaceStatus::MarketplaceLoading;
+            snap.checked_at = Some(Utc::now().to_rfc3339());
+        }
+        self.bus
+            .browser_manager()
+            .set_marketplace_loading();
+
+        self.bus.ensure_browser_ready(RuntimeServiceKind::Marketplace)?;
+
+        let nav = self
+            .navigation
+            .navigate_with_recovery(NavigationDestination::MarketplaceCreateVehicle)?;
+
+        if !nav.ready {
+            return Err(format!(
+                "Vehicle create navigation not ready (url={:?})",
+                nav.current_url
+            ));
+        }
+
+        self.bus
+            .record_navigation_success(NavigationDestination::MarketplaceCreateVehicle.sidecar_key());
+
+        let verification = self.verify_vehicle_create_form()?;
+        if !verification.ready {
+            let mut snap = self.snapshot.lock();
+            snap.status = MarketplaceStatus::MarketplaceError;
+            snap.reason_code = Some(verification.reason_code.clone());
+            snap.current_url = verification.current_url.clone();
+            snap.screenshot_path = verification.screenshot_path.clone();
+            snap.checked_at = verification.checked_at.clone();
+            return Err(format!(
+                "Vehicle create form not ready: {}",
+                verification.reason_code
+            ));
+        }
+
+        {
+            let mut snap = self.snapshot.lock();
+            snap.status = MarketplaceStatus::MarketplaceReady;
+            snap.reason_code = Some(verification.reason_code.clone());
+            snap.current_url = verification.current_url.clone();
+            snap.checked_at = verification.checked_at.clone();
+            snap.screenshot_path = verification.screenshot_path.clone();
+        }
+
+        self.bus
+            .browser_manager()
+            .update_marketplace_from_sidecar(&crate::browser::SidecarMarketplaceResult {
+                status: "marketplace_ready".into(),
+                checked_at: Utc::now().to_rfc3339(),
+                current_url: verification
+                    .current_url
+                    .clone()
+                    .unwrap_or_else(|| NavigationDestination::MarketplaceCreateVehicle.url().into()),
+                reason_code: verification.reason_code.clone(),
+                screenshot_path: verification.screenshot_path.clone(),
+            });
+
+        Ok(self.snapshot())
+    }
+
+    pub fn verify_vehicle_create_form(&self) -> Result<VehicleCreateVerification, String> {
+        self.bus.ensure_browser_ready(RuntimeServiceKind::Marketplace)?;
+
+        let line = self.bus.sidecar_request(
+            RuntimeServiceKind::Marketplace,
+            "verify_vehicle_create",
+            serde_json::json!({}),
+            VERIFY_TIMEOUT,
+        )?;
+
+        if line.ok == Some(false) {
+            if let Some(result) = line.result.clone() {
+                if let Some(vc) = result.get("vehicle_create") {
+                    return parse_vehicle_create_verification(vc.clone());
+                }
+            }
+            return Err(line
+                .error
+                .unwrap_or_else(|| "Vehicle create verification failed".into()));
+        }
+
+        let result = line.result.ok_or_else(|| {
+            "verify_vehicle_create returned no result".to_string()
+        })?;
+
+        let vc_value = result
+            .get("vehicle_create")
+            .cloned()
+            .unwrap_or(result);
+
+        parse_vehicle_create_verification(vc_value)
     }
 
     fn open_destination(
@@ -135,6 +248,13 @@ impl MarketplaceService {
     }
 }
 
+fn parse_vehicle_create_verification(
+    value: serde_json::Value,
+) -> Result<VehicleCreateVerification, String> {
+    serde_json::from_value(value)
+        .map_err(|e| format!("invalid vehicle create verification payload: {e}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -172,5 +292,19 @@ mod tests {
         }))
         .unwrap();
         assert!(svc.is_ready());
+    }
+
+    #[test]
+    fn parse_vehicle_create_verification_payload() {
+        let vc = parse_vehicle_create_verification(serde_json::json!({
+            "ready": true,
+            "reason_code": "vehicle_create_ready",
+            "current_url": "https://www.facebook.com/marketplace/create/vehicle",
+            "signals_met": ["vehicle_create_url"],
+            "signals_missing": []
+        }))
+        .unwrap();
+        assert!(vc.ready);
+        assert_eq!(vc.reason_code, "vehicle_create_ready");
     }
 }

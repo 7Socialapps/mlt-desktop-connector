@@ -17,6 +17,7 @@ import {
   navigateWithRetry,
   waitForPageReady,
 } from "./navigation.mjs";
+import { verifyVehicleCreateFromPage } from "./vehicle-create-verifier.mjs";
 
 /** @typedef {"stopped"|"starting"|"ready"|"crashed"} BrowserState */
 /** @typedef {"profile_missing"|"profile_initializing"|"profile_ready"|"profile_locked"|"profile_corrupt"|"profile_reset_required"} ProfileState */
@@ -581,6 +582,41 @@ async function handleDetectFacebookSession(id) {
   ok(id, { facebook: detection });
 }
 
+async function handleVerifyVehicleCreate(id) {
+  if (!page || browserState !== "ready") {
+    fail(id, "NO_ACTIVE_PAGE", "Browser is not ready — launch the browser first");
+    return;
+  }
+
+  try {
+    const verification = await verifyVehicleCreateFromPage(page);
+    let screenshot_path = null;
+    if (!verification.ready) {
+      screenshot_path = await captureDiagnosticScreenshot(
+        verification.reason_code ?? "verify_failed",
+      );
+    }
+    ok(id, {
+      vehicle_create: {
+        ...verification,
+        screenshot_path,
+      },
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    const screenshot_path = await captureDiagnosticScreenshot("verify_error");
+    fail(id, "VEHICLE_CREATE_VERIFY_FAILED", message, {
+      vehicle_create: {
+        ready: false,
+        reason_code: "verify_error",
+        screenshot_path,
+        current_url: page.url(),
+        checked_at: new Date().toISOString(),
+      },
+    });
+  }
+}
+
 async function handleGetActivePage(id) {
   if (!page || browserState !== "ready") {
     fail(id, "NO_ACTIVE_PAGE", "Browser is not ready");
@@ -661,6 +697,9 @@ async function dispatch(line) {
         break;
       case "open_marketplace":
         await handleOpenMarketplace(id, params ?? {});
+        break;
+      case "verify_vehicle_create":
+        await handleVerifyVehicleCreate(id);
         break;
       case "navigate":
         await handleNavigate(id, params ?? {});
