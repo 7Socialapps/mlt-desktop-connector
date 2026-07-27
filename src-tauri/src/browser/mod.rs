@@ -1,9 +1,11 @@
 mod manager;
+mod profile;
 mod runtime;
 mod sidecar;
 mod types;
 
 pub use manager::BrowserManager;
+pub use profile::{ProfileSnapshot, ProfileStatus};
 pub use runtime::BrowserRuntimeService;
 pub use types::{
     BrowserActivePage, BrowserManagerSnapshot, BrowserRuntimeSnapshot,

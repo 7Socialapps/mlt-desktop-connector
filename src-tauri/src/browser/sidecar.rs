@@ -174,6 +174,7 @@ struct SidecarProcess {
 
 pub struct SidecarDaemon {
     server_path: PathBuf,
+    profile_dir: Mutex<Option<PathBuf>>,
     process: Mutex<Option<SidecarProcess>>,
     request_counter: AtomicU64,
     pending: Arc<Mutex<HashMap<String, Sender<Result<SidecarDaemonLine>>>>>,
@@ -186,6 +187,7 @@ impl SidecarDaemon {
         let (event_tx, event_rx) = mpsc::channel();
         Self {
             server_path,
+            profile_dir: Mutex::new(None),
             process: Mutex::new(None),
             request_counter: AtomicU64::new(0),
             pending: Arc::new(Mutex::new(HashMap::new())),
@@ -206,6 +208,10 @@ impl SidecarDaemon {
         self.process.lock().is_some()
     }
 
+    pub fn set_profile_dir(&self, path: PathBuf) {
+        *self.profile_dir.lock() = Some(path);
+    }
+
     pub fn start(&self) -> Result<()> {
         if self.is_running() {
             return Ok(());
@@ -218,11 +224,20 @@ impl SidecarDaemon {
             "starting browser sidecar daemon"
         );
 
-        let mut child = Command::new(&node)
-            .arg(&self.server_path)
+        let mut cmd = Command::new(&node);
+        cmd.arg(&self.server_path)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+            .stderr(Stdio::piped());
+
+        if let Some(profile) = self.profile_dir.lock().as_ref() {
+            cmd.env(
+                "MLT_BROWSER_PROFILE_DIR",
+                profile.to_string_lossy().into_owned(),
+            );
+        }
+
+        let mut child = cmd
             .spawn()
             .context("failed to spawn browser sidecar daemon")?;
 

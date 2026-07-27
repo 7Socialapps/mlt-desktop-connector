@@ -136,6 +136,20 @@ fn browser_get_active_page(
     services.browser_manager.get_active_page()
 }
 
+#[tauri::command]
+fn browser_reset_profile(
+    services: tauri::State<'_, AppServices>,
+) -> Result<BrowserManagerSnapshot, String> {
+    services.browser_manager.reset_profile()
+}
+
+#[tauri::command]
+fn browser_profile_status(
+    services: tauri::State<'_, AppServices>,
+) -> Result<BrowserManagerSnapshot, String> {
+    services.browser_manager.profile_status()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let config = match AppConfig::from_env() {
@@ -313,7 +327,9 @@ pub fn run() {
             browser_stop,
             browser_restart,
             browser_health_check,
-            browser_get_active_page
+            browser_get_active_page,
+            browser_reset_profile,
+            browser_profile_status
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

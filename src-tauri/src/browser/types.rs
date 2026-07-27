@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use super::profile::ProfileStatus;
+
 pub const MAX_AUTO_RESTART_ATTEMPTS: u32 = 5;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -79,6 +81,8 @@ pub struct BrowserManagerSnapshot {
     pub max_restart_attempts: u32,
     pub last_health_check_at: Option<String>,
     pub auto_restart_enabled: bool,
+    pub profile_status: ProfileStatus,
+    pub profile_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -123,6 +127,8 @@ pub struct SidecarStatusResult {
     pub browser_connected: Option<bool>,
     #[serde(default)]
     pub process_alive: Option<bool>,
+    #[serde(default)]
+    pub profile_status: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -173,6 +179,8 @@ impl BrowserManagerSnapshot {
             max_restart_attempts: MAX_AUTO_RESTART_ATTEMPTS,
             last_health_check_at: None,
             auto_restart_enabled: true,
+            profile_status: ProfileStatus::ProfileMissing,
+            profile_path: None,
         }
     }
 }

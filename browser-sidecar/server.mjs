@@ -1,24 +1,37 @@
 #!/usr/bin/env node
 /**
- * Playwright browser sidecar — long-running daemon (Milestone 2.2).
+ * Playwright browser sidecar — long-running daemon (Milestone 2.2+).
  * Rust communicates via newline-delimited JSON on stdin/stdout.
- * Holds a single managed Chromium instance across commands.
+ * Holds a single managed Chromium instance with persistent profile (2.3+).
  */
 import { chromium } from "playwright";
 import readline from "node:readline";
+import fs from "node:fs";
+import path from "node:path";
 
 /** @typedef {"stopped"|"starting"|"ready"|"crashed"} BrowserState */
+/** @typedef {"profile_missing"|"profile_initializing"|"profile_ready"|"profile_locked"|"profile_corrupt"|"profile_reset_required"} ProfileState */
 
-/** @type {import("playwright").Browser | null} */
-let browser = null;
 /** @type {import("playwright").BrowserContext | null} */
 let context = null;
 /** @type {import("playwright").Page | null} */
 let page = null;
 /** @type {BrowserState} */
 let browserState = "stopped";
+/** @type {ProfileState} */
+let profileState = "profile_missing";
 /** @type {number | null} */
 let browserPid = null;
+
+const LOCK_FILE = ".profile.lock";
+
+function profileDir() {
+  return process.env.MLT_BROWSER_PROFILE_DIR ?? "";
+}
+
+function lockFilePath() {
+  return path.join(profileDir(), LOCK_FILE);
+}
 
 function emit(line) {
   process.stdout.write(`${JSON.stringify(line)}\n`);
@@ -53,19 +66,92 @@ function isProcessAlive(pid) {
   }
 }
 
+function readLockFile() {
+  try {
+    const raw = fs.readFileSync(lockFilePath(), "utf8");
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+function writeLockFile(pid) {
+  const dir = profileDir();
+  if (!dir) return;
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(
+    lockFilePath(),
+    JSON.stringify({
+      pid,
+      created_at: new Date().toISOString(),
+      owner: "mlt-browser-sidecar",
+    }),
+  );
+}
+
+function removeLockFile() {
+  try {
+    fs.unlinkSync(lockFilePath());
+  } catch {
+    /* ignore */
+  }
+}
+
+function inspectProfileOnDisk() {
+  const dir = profileDir();
+  if (!dir) {
+    return "profile_missing";
+  }
+  if (!fs.existsSync(dir)) {
+    return "profile_missing";
+  }
+  const lock = readLockFile();
+  if (lock?.pid && isProcessAlive(lock.pid) && lock.pid !== browserPid) {
+    return "profile_locked";
+  }
+  const hasDefault = fs.existsSync(path.join(dir, "Default"));
+  const hasLocalState = fs.existsSync(path.join(dir, "Local State"));
+  if (hasDefault || hasLocalState) {
+    return "profile_ready";
+  }
+  try {
+    const entries = fs.readdirSync(dir).filter((e) => e !== LOCK_FILE);
+    if (entries.length > 0) {
+      return "profile_ready";
+    }
+  } catch {
+    /* ignore */
+  }
+  return "profile_missing";
+}
+
 function currentStatus() {
   const alive = browserPid ? isProcessAlive(browserPid) : false;
-  if (browserState === "ready" && browser && !browser.isConnected()) {
-    browserState = "crashed";
+  if (context) {
+    try {
+      const browser = context.browser();
+      if (browser && !browser.isConnected()) {
+        browserState = "crashed";
+      }
+    } catch {
+      browserState = "crashed";
+    }
   }
   if (browserState === "ready" && browserPid && !alive) {
     browserState = "crashed";
   }
+  if (browserState === "ready" && profileState !== "profile_initializing") {
+    profileState = "profile_ready";
+  } else if (browserState === "stopped") {
+    profileState = inspectProfileOnDisk();
+  }
   return {
     browser_state: browserState,
     pid: browserPid,
-    browser_connected: Boolean(browser?.isConnected()),
+    browser_connected: Boolean(context?.browser()?.isConnected()),
     process_alive: alive,
+    profile_status: profileState,
+    profile_path: profileDir() || null,
   };
 }
 
@@ -81,17 +167,11 @@ async function teardownBrowser(reason = "stop") {
   } catch {
     /* ignore close errors */
   }
-  try {
-    if (browser) {
-      await browser.close();
-    }
-  } catch {
-    /* ignore close errors */
-  }
 
   context = null;
   page = null;
-  browser = null;
+  removeLockFile();
+  profileState = inspectProfileOnDisk();
 
   if (previousPid) {
     emitEvent("browser_stopped", { pid: previousPid, reason });
@@ -99,6 +179,7 @@ async function teardownBrowser(reason = "stop") {
 }
 
 function attachDisconnectHandler() {
+  const browser = context?.browser();
   if (!browser) {
     return;
   }
@@ -110,20 +191,27 @@ function attachDisconnectHandler() {
         reason: "disconnected",
       });
     }
-    browser = null;
     context = null;
     page = null;
     browserPid = null;
+    removeLockFile();
   });
 }
 
 async function handleLaunch(id) {
-  if (browser && browser.isConnected()) {
-    ok(id, {
-      ...currentStatus(),
-      already_running: true,
-    });
-    return;
+  if (context) {
+    try {
+      const browser = context.browser();
+      if (browser?.isConnected()) {
+        ok(id, {
+          ...currentStatus(),
+          already_running: true,
+        });
+        return;
+      }
+    } catch {
+      /* fall through to relaunch */
+    }
   }
 
   if (browserPid && isProcessAlive(browserPid)) {
@@ -136,30 +224,73 @@ async function handleLaunch(id) {
 
   await teardownBrowser("relaunch");
 
+  const dir = profileDir();
+  if (!dir) {
+    fail(id, "PROFILE_DIR_MISSING", "MLT_BROWSER_PROFILE_DIR is not configured");
+    return;
+  }
+
+  const diskState = inspectProfileOnDisk();
+  if (diskState === "profile_locked") {
+    profileState = "profile_locked";
+    fail(
+      id,
+      "PROFILE_LOCKED",
+      "Browser profile is locked by another process",
+    );
+    return;
+  }
+
   browserState = "starting";
+  profileState =
+    diskState === "profile_missing" ? "profile_initializing" : "profile_ready";
   emitEvent("browser_starting", {});
 
   try {
-    browser = await chromium.launch({
+    fs.mkdirSync(dir, { recursive: true });
+    context = await chromium.launchPersistentContext(dir, {
       headless: false,
       args: ["--disable-dev-shm-usage"],
     });
     attachDisconnectHandler();
-    browserPid = browser.process()?.pid ?? null;
-    context = await browser.newContext();
-    page = await context.newPage();
-    await page.goto("about:blank");
+    browserPid = context.browser()?.process()?.pid ?? null;
+    if (browserPid) {
+      writeLockFile(browserPid);
+    }
+    const pages = context.pages();
+    page = pages.length > 0 ? pages[0] : await context.newPage();
+    if (page.url() === "about:blank") {
+      await page.goto("about:blank");
+    }
     browserState = "ready";
+    profileState = "profile_ready";
     emitEvent("browser_ready", { pid: browserPid });
     ok(id, { ...currentStatus(), launched: true });
   } catch (err) {
     browserState = "stopped";
     browserPid = null;
-    browser = null;
     context = null;
     page = null;
+    removeLockFile();
     const message = err instanceof Error ? err.message : String(err);
-    fail(id, "LAUNCH_FAILED", message);
+    if (
+      message.includes("SingletonLock") ||
+      message.includes("profile is already in use") ||
+      message.includes("ProcessSingleton")
+    ) {
+      profileState = "profile_locked";
+      fail(id, "PROFILE_LOCKED", "Browser profile is locked by another process");
+    } else if (
+      message.includes("corrupt") ||
+      message.includes("cannot read") ||
+      message.includes("Failed to create")
+    ) {
+      profileState = "profile_corrupt";
+      fail(id, "PROFILE_CORRUPT", "Browser profile appears corrupt");
+    } else {
+      profileState = inspectProfileOnDisk();
+      fail(id, "LAUNCH_FAILED", message);
+    }
   }
 }
 
@@ -179,6 +310,15 @@ async function handlePing(id) {
 
 async function handleStatus(id) {
   ok(id, currentStatus());
+}
+
+async function handleProfileStatus(id) {
+  profileState = inspectProfileOnDisk();
+  ok(id, {
+    profile_status: profileState,
+    profile_path: profileDir() || null,
+    browser_state: browserState,
+  });
 }
 
 async function handleGetActivePage(id) {
@@ -249,6 +389,9 @@ async function dispatch(line) {
         break;
       case "status":
         await handleStatus(id);
+        break;
+      case "profile_status":
+        await handleProfileStatus(id);
         break;
       case "get_active_page":
         await handleGetActivePage(id);

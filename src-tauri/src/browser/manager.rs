@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
@@ -7,6 +8,7 @@ use parking_lot::Mutex;
 use tauri::{AppHandle, Emitter};
 use tracing::{info, warn};
 
+use super::profile::{inspect_local_profile, reset_profile_dir, resolve_profile_dir, ProfileStatus};
 use super::runtime::BrowserRuntimeService;
 use super::sidecar::{SidecarDaemon, SidecarEvent};
 use super::types::{
@@ -49,6 +51,7 @@ pub struct BrowserManager {
     runtime: Arc<BrowserRuntimeService>,
     daemon: Arc<SidecarDaemon>,
     state: Arc<Mutex<BrowserManagerSnapshot>>,
+    profile_dir: Mutex<Option<PathBuf>>,
     lifecycle_lock: Arc<Mutex<()>>,
     app_handle: Mutex<Option<AppHandle>>,
     monitor_started: Mutex<bool>,
@@ -61,6 +64,7 @@ impl BrowserManager {
             runtime,
             daemon,
             state: Arc::new(Mutex::new(snapshot)),
+            profile_dir: Mutex::new(None),
             lifecycle_lock: Arc::new(Mutex::new(())),
             app_handle: Mutex::new(None),
             monitor_started: Mutex::new(false),
@@ -68,7 +72,19 @@ impl BrowserManager {
     }
 
     pub fn initialize(&self, app_handle: AppHandle) -> Result<(), String> {
-        *self.app_handle.lock() = Some(app_handle);
+        *self.app_handle.lock() = Some(app_handle.clone());
+
+        if let Ok(profile_path) = resolve_profile_dir(&app_handle) {
+            super::profile::ensure_profile_parent(&profile_path)?;
+            let local_status = inspect_local_profile(&profile_path);
+            {
+                let mut guard = self.state.lock();
+                guard.profile_status = local_status;
+                guard.profile_path = Some(profile_path.to_string_lossy().into_owned());
+            }
+            self.daemon.set_profile_dir(profile_path.clone());
+            *self.profile_dir.lock() = Some(profile_path);
+        }
 
         if !self.state.lock().enabled {
             self.set_status(BrowserRuntimeStatus::BrowserStopped);
@@ -152,6 +168,54 @@ impl BrowserManager {
     pub fn restart(&self) -> Result<BrowserManagerSnapshot, String> {
         let _guard = self.lifecycle_lock.lock();
         self.restart_inner(false)
+    }
+
+    pub fn reset_profile(&self) -> Result<BrowserManagerSnapshot, String> {
+        let _guard = self.lifecycle_lock.lock();
+
+        if self.snapshot().status.is_operational() {
+            return Err("Stop the browser before resetting the profile".into());
+        }
+
+        let profile_path = self
+            .profile_dir
+            .lock()
+            .clone()
+            .ok_or_else(|| "Profile directory not configured".to_string())?;
+
+        reset_profile_dir(&profile_path)?;
+
+        {
+            let mut guard = self.state.lock();
+            guard.profile_status = ProfileStatus::ProfileMissing;
+            guard.last_error = None;
+            guard.last_error_code = None;
+        }
+
+        self.emit_changed();
+        Ok(self.snapshot())
+    }
+
+    pub fn profile_status(&self) -> Result<BrowserManagerSnapshot, String> {
+        if self.daemon.is_running() {
+            if let Ok(line) = self.daemon.request(
+                "profile_status",
+                serde_json::json!({}),
+                HEALTH_CHECK_TIMEOUT,
+            ) {
+                if let Some(result) = line.result {
+                    if let Some(status) = result.get("profile_status").and_then(|v| v.as_str()) {
+                        let mut guard = self.state.lock();
+                        guard.profile_status = parse_profile_status(status);
+                    }
+                }
+            }
+        } else if let Some(path) = self.profile_dir.lock().as_ref() {
+            let status = inspect_local_profile(path);
+            self.state.lock().profile_status = status;
+        }
+        self.emit_changed();
+        Ok(self.snapshot())
     }
 
     pub fn health_check(&self) -> Result<BrowserManagerSnapshot, String> {
@@ -521,6 +585,7 @@ impl BrowserManager {
             runtime: self.runtime.clone(),
             daemon: self.daemon.clone(),
             state: self.state.clone(),
+            profile_dir: Mutex::new(self.profile_dir.lock().clone()),
             lifecycle_lock: self.lifecycle_lock.clone(),
             app_handle: Mutex::new(self.app_handle.lock().clone()),
             monitor_started: Mutex::new(true),
@@ -548,6 +613,9 @@ impl BrowserManager {
 
     fn apply_sidecar_status(&self, guard: &mut BrowserManagerSnapshot, status: &SidecarStatusResult) {
         guard.browser_pid = status.pid;
+        if let Some(ps) = status.profile_status.as_deref() {
+            guard.profile_status = parse_profile_status(ps);
+        }
         match status.browser_state.as_deref() {
             Some("ready") => guard.status = BrowserRuntimeStatus::BrowserReady,
             Some("starting") => guard.status = BrowserRuntimeStatus::BrowserStarting,
@@ -582,6 +650,17 @@ impl BrowserManager {
             let snapshot = self.snapshot();
             let _ = app.emit("connector://browser-changed", snapshot);
         }
+    }
+}
+
+fn parse_profile_status(raw: &str) -> ProfileStatus {
+    match raw {
+        "profile_initializing" => ProfileStatus::ProfileInitializing,
+        "profile_ready" => ProfileStatus::ProfileReady,
+        "profile_locked" => ProfileStatus::ProfileLocked,
+        "profile_corrupt" => ProfileStatus::ProfileCorrupt,
+        "profile_reset_required" => ProfileStatus::ProfileResetRequired,
+        _ => ProfileStatus::ProfileMissing,
     }
 }
 
