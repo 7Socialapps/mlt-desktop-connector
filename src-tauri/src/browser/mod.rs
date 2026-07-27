@@ -6,13 +6,14 @@ mod runtime;
 mod sidecar;
 mod types;
 
-pub use facebook::{FacebookSessionSnapshot, FacebookSessionState};
+pub use facebook::{url_category, FacebookSessionSnapshot, FacebookSessionState};
 pub use manager::BrowserManager;
 pub use marketplace::{MarketplaceSnapshot, MarketplaceStatus};
 pub use profile::{ProfileSnapshot, ProfileStatus};
 pub use runtime::BrowserRuntimeService;
 pub use types::{
     BrowserActivePage, BrowserManagerSnapshot, BrowserRuntimeSnapshot,
+    BrowserRuntimeStatus,
 };
 
 use std::sync::{Arc, OnceLock};

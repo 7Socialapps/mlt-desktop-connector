@@ -8,7 +8,8 @@
 | **Complete** | 2.4 Manual Facebook Login Flow |
 | **Complete** | 2.5 Facebook Session Detector |
 | **Complete** | 2.6 Marketplace Navigation |
-| Pending | 2.7–2.13 |
+| **Complete** | 2.7 Heartbeat Integration |
+| Pending | 2.8–2.13 |
 
 ## Architecture
 

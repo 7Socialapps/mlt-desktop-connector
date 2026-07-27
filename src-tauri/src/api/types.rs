@@ -31,10 +31,49 @@ pub enum DeviceStatus {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum FacebookSessionState {
+    FacebookNotChecked,
+    FacebookLoggedOut,
+    FacebookLoginInProgress,
+    FacebookLoggedIn,
+    FacebookCheckpoint,
+    FacebookMfaRequired,
+    FacebookSessionExpired,
+    FacebookError,
+    /// Legacy values retained for backward-compatible deserialization.
+    #[serde(alias = "unknown")]
     Unknown,
+    #[serde(alias = "signed_in")]
     SignedIn,
+    #[serde(alias = "signed_out")]
     SignedOut,
+    #[serde(alias = "expired")]
     Expired,
+}
+
+impl FacebookSessionState {
+    pub fn as_heartbeat_str(&self) -> &'static str {
+        match self {
+            Self::FacebookNotChecked | Self::Unknown => "facebook_not_checked",
+            Self::FacebookLoggedOut | Self::SignedOut => "facebook_logged_out",
+            Self::FacebookLoginInProgress => "facebook_login_in_progress",
+            Self::FacebookLoggedIn | Self::SignedIn => "facebook_logged_in",
+            Self::FacebookCheckpoint => "facebook_checkpoint",
+            Self::FacebookMfaRequired => "facebook_mfa_required",
+            Self::FacebookSessionExpired | Self::Expired => "facebook_session_expired",
+            Self::FacebookError => "facebook_error",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum BrowserUrlCategory {
+    Unknown,
+    Blank,
+    FacebookMarketplace,
+    FacebookAuth,
+    FacebookOther,
+    Other,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -83,16 +122,30 @@ pub struct AuthenticateDeviceResponse {
 }
 
 #[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct HeartbeatRequest {
     pub action: String,
+    #[serde(rename = "deviceId")]
     pub device_id: String,
+    #[serde(rename = "userId")]
     pub user_id: String,
+    #[serde(rename = "dealershipId")]
     pub dealership_id: String,
+    #[serde(rename = "connectorVersion")]
     pub connector_version: String,
     pub os: ConnectorOs,
     pub capabilities: Vec<String>,
-    pub facebook_session_state: FacebookSessionState,
+    pub connector_status: String,
+    pub browser_status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub browser_version: Option<String>,
+    pub profile_status: String,
+    pub facebook_session_state: String,
+    pub marketplace_status: String,
+    pub current_browser_url_category: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_browser_check_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_browser_error_code: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

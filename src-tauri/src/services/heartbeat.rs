@@ -7,12 +7,14 @@ use tauri::{AppHandle, Emitter};
 use tokio::sync::Notify;
 use tracing::{debug, info, warn};
 
-use crate::api::types::{ConnectorOs, FacebookSessionState, HeartbeatRequest};
+use crate::api::types::{ConnectorOs, HeartbeatRequest};
 use crate::api::ConnectorApiClient;
+use crate::browser::BrowserManager;
 use crate::credentials::{
     self, ensure_access_token, handle_revoked_device, has_access_token, is_paired,
     load_credentials,
 };
+use crate::services::connection_test::build_heartbeat_browser_fields;
 use crate::state::{AppState, ConnectionState};
 use crate::version::{CONNECTOR_VERSION, DEFAULT_CAPABILITIES};
 
@@ -30,6 +32,7 @@ impl HeartbeatService {
         app: AppHandle,
         state: Arc<Mutex<AppState>>,
         client: Arc<ConnectorApiClient>,
+        browser_manager: Arc<BrowserManager>,
     ) -> Arc<Self> {
         let service = Arc::new(Self {
             shutdown: Arc::new(AtomicBool::new(false)),
@@ -97,7 +100,7 @@ impl HeartbeatService {
                     }
                 }
 
-                match send_heartbeat(&client, &state).await {
+                match send_heartbeat(&client, &state, &browser_manager).await {
                     Ok(at) => {
                         backoff = INITIAL_BACKOFF;
                         {
@@ -162,22 +165,36 @@ impl HeartbeatService {
 async fn send_heartbeat(
     client: &ConnectorApiClient,
     state: &Arc<Mutex<AppState>>,
+    browser_manager: &Arc<BrowserManager>,
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
     let creds = load_credentials()?.ok_or("missing credentials")?;
     if creds.access_token.is_empty() {
         return Err("access token unavailable — reconnect required".into());
     }
-    let device_id = state.lock().device_id.to_string();
+    let (device_id, browser_fields) = {
+        let guard = state.lock();
+        let browser_snapshot = browser_manager.snapshot();
+        let fields = build_heartbeat_browser_fields(&guard, &browser_snapshot);
+        (guard.device_id.to_string(), fields)
+    };
 
     let request = HeartbeatRequest {
         action: "heartbeat".into(),
         device_id,
         user_id: creds.user_id,
         dealership_id: creds.dealership_id,
-        connector_version: CONNECTOR_VERSION.to_string(),
+        connector_version: browser_fields.connector_version.clone(),
         os: ConnectorOs::detect(),
         capabilities: DEFAULT_CAPABILITIES.iter().map(|s| s.to_string()).collect(),
-        facebook_session_state: FacebookSessionState::Unknown,
+        connector_status: browser_fields.connector_status,
+        browser_status: browser_fields.browser_status,
+        browser_version: browser_fields.browser_version,
+        profile_status: browser_fields.profile_status,
+        facebook_session_state: browser_fields.facebook_session_state,
+        marketplace_status: browser_fields.marketplace_status,
+        current_browser_url_category: browser_fields.current_browser_url_category,
+        last_browser_check_at: browser_fields.last_browser_check_at,
+        last_browser_error_code: browser_fields.last_browser_error_code,
     };
 
     let response = client

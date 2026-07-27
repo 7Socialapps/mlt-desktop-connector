@@ -27,8 +27,8 @@ use lifecycle::{
     ShutdownCoordinator,
 };
 use services::{
-    enable_polling_if_authenticated, HeartbeatService, PairingCoordinator, PairingUiState,
-    PollingService,
+    enable_polling_if_authenticated, run_connection_tests, ConnectionTestReport,
+    HeartbeatService, PairingCoordinator, PairingUiState, PollingService,
 };
 use browser::{
     BrowserActivePage, BrowserManagerSnapshot, BrowserRuntimeService, BrowserRuntimeSnapshot,
@@ -39,6 +39,7 @@ use state::{AppState, ConnectionState};
 struct AppServices {
     shutdown: Arc<ShutdownCoordinator>,
     state: Arc<Mutex<AppState>>,
+    api_client: Arc<ConnectorApiClient>,
     pairing: Arc<PairingCoordinator>,
     polling: Arc<PollingService>,
     browser_runtime: Arc<BrowserRuntimeService>,
@@ -174,6 +175,21 @@ fn browser_profile_status(
     services.browser_manager.profile_status()
 }
 
+#[tauri::command]
+async fn run_connection_tests_cmd(
+    services: tauri::State<'_, AppServices>,
+) -> Result<ConnectionTestReport, String> {
+    Ok(
+        run_connection_tests(
+            services.api_client.as_ref(),
+            &services.state,
+            services.browser_manager.as_ref(),
+            services.browser_runtime.as_ref(),
+        )
+        .await,
+    )
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let config = match AppConfig::from_env() {
@@ -216,8 +232,15 @@ pub fn run() {
 
             mark_instance_ready(&state);
 
-            let heartbeat =
-                HeartbeatService::spawn(app.handle().clone(), state.clone(), api_client.clone());
+            let browser_runtime = browser::init(browser::is_browser_enabled());
+            let browser_manager = browser::init_manager(browser_runtime.clone());
+
+            let heartbeat = HeartbeatService::spawn(
+                app.handle().clone(),
+                state.clone(),
+                api_client.clone(),
+                browser_manager.clone(),
+            );
             let polling = PollingService::spawn(
                 app.handle().clone(),
                 state.clone(),
@@ -293,9 +316,6 @@ pub fn run() {
                 }
             });
 
-            let browser_runtime = browser::init(browser::is_browser_enabled());
-            let browser_manager = browser::init_manager(browser_runtime.clone());
-
             let browser_init = browser_manager.clone();
             let browser_app = app.handle().clone();
             tauri::async_runtime::spawn(async move {
@@ -321,6 +341,7 @@ pub fn run() {
             app.manage(AppServices {
                 shutdown,
                 state: state.clone(),
+                api_client: api_client.clone(),
                 pairing,
                 polling,
                 browser_runtime,
@@ -356,7 +377,8 @@ pub fn run() {
             browser_open_marketplace,
             browser_detect_facebook_session,
             browser_reset_profile,
-            browser_profile_status
+            browser_profile_status,
+            run_connection_tests_cmd
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
