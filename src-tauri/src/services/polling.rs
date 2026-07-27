@@ -12,17 +12,20 @@ use crate::api::types::{
 };
 use crate::api::ConnectorApiClient;
 use crate::credentials::{ensure_access_token, has_access_token, is_paired, load_credentials};
+use crate::marketplace::jobs::PrepareForReviewExecutor;
 use crate::marketplace::payload::{
     reject_unsupported_execution_mode, validate_and_normalize, ExecutionMode, VehicleJobPayload,
 };
+use crate::runtime::FacebookRuntime;
 use crate::state::{AppState, ConnectionState};
 use crate::version::CONNECTOR_VERSION;
 
-/// Job transport polls the backend; browser automation uses `FacebookRuntime` (M4+).
+/// Job transport polls the backend; browser automation uses `FacebookRuntime` (M3.3+).
 pub struct PollingService {
     enabled: Arc<AtomicBool>,
     shutdown: Arc<AtomicBool>,
     busy: Arc<AtomicBool>,
+    active_job_id: Arc<Mutex<Option<String>>>,
 }
 
 impl PollingService {
@@ -30,16 +33,19 @@ impl PollingService {
         app: AppHandle,
         state: Arc<Mutex<AppState>>,
         client: Arc<ConnectorApiClient>,
+        facebook_runtime: Arc<FacebookRuntime>,
     ) -> Arc<Self> {
         let service = Arc::new(Self {
             enabled: Arc::new(AtomicBool::new(false)),
             shutdown: Arc::new(AtomicBool::new(false)),
             busy: Arc::new(AtomicBool::new(false)),
+            active_job_id: Arc::new(Mutex::new(None)),
         });
 
         let enabled_flag = service.enabled.clone();
         let shutdown_flag = service.shutdown.clone();
         let busy_flag = service.busy.clone();
+        let active_job_id = service.active_job_id.clone();
 
         tauri::async_runtime::spawn(async move {
             let app_handle = app.clone();
@@ -59,7 +65,16 @@ impl PollingService {
                     continue;
                 }
 
-                match poll_and_process(&app_handle, &client, &state, busy_flag.clone()).await {
+                match poll_and_process(
+                    &app_handle,
+                    &client,
+                    &state,
+                    busy_flag.clone(),
+                    active_job_id.clone(),
+                    facebook_runtime.clone(),
+                )
+                .await
+                {
                     Ok(()) => {}
                     Err(err) => {
                         error!(error = %err, "job transport handler failed");
@@ -85,6 +100,10 @@ impl PollingService {
     pub fn stop(&self) {
         self.shutdown.store(true, Ordering::SeqCst);
     }
+
+    pub fn active_job_id(&self) -> Option<String> {
+        self.active_job_id.lock().clone()
+    }
 }
 
 pub fn enable_polling_if_authenticated(polling: &PollingService, state: &mut AppState) {
@@ -101,6 +120,8 @@ async fn poll_and_process(
     client: &ConnectorApiClient,
     state: &Arc<Mutex<AppState>>,
     busy: Arc<AtomicBool>,
+    active_job_id: Arc<Mutex<Option<String>>>,
+    facebook_runtime: Arc<FacebookRuntime>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     if !has_access_token() {
         if !ensure_access_token(client).await? {
@@ -133,6 +154,14 @@ async fn poll_and_process(
         return Ok(());
     };
 
+    {
+        let active = active_job_id.lock();
+        if active.as_deref() == Some(&job.id) {
+            info!(job_id = %job.id, "skipping duplicate job execution — already active");
+            return Ok(());
+        }
+    }
+
     info!(
         job_id = %job.id,
         status = %job.status,
@@ -142,12 +171,28 @@ async fn poll_and_process(
 
     busy.store(true, Ordering::SeqCst);
     {
+        let mut guard = active_job_id.lock();
+        *guard = Some(job.id.clone());
+    }
+    {
         let mut guard = state.lock();
         guard.current_job_id = Some(job.id.clone());
         guard.connection_state = ConnectionState::Connected;
     }
-    let result = process_job(app, client, &creds, &device_id, &job.id).await;
+    let result = process_job(
+        app,
+        client,
+        &creds,
+        &device_id,
+        &job.id,
+        facebook_runtime,
+    )
+    .await;
     busy.store(false, Ordering::SeqCst);
+    {
+        let mut guard = active_job_id.lock();
+        *guard = None;
+    }
     {
         let mut guard = state.lock();
         guard.current_job_id = None;
@@ -161,6 +206,7 @@ async fn process_job(
     creds: &crate::credentials::StoredCredentials,
     device_id: &str,
     job_id: &str,
+    facebook_runtime: Arc<FacebookRuntime>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     info!(job_id, "job started — claiming via transport layer");
 
@@ -248,7 +294,10 @@ async fn process_job(
     }
 
     if matches!(payload.execution_mode, ExecutionMode::PrepareForReview) {
-        return run_prepare_for_review_assets_flow(app, client, job_id, &scoped, &payload).await;
+        let executor = PrepareForReviewExecutor::new(facebook_runtime);
+        return executor
+            .execute(app, client, job_id, &scoped, &payload)
+            .await;
     }
 
     warn!(job_id, "unexpected execution mode after validation");
@@ -300,85 +349,6 @@ async fn run_transport_test_flow(
         .map_err(|e| format!("complete_job failed for {job_id}: {e}"))?;
 
     info!(job_id, "job completed — transport test finished (dashboard should show posted)");
-    Ok(())
-}
-
-async fn run_prepare_for_review_assets_flow(
-    app: &AppHandle,
-    client: &ConnectorApiClient,
-    job_id: &str,
-    scoped: &str,
-    payload: &VehicleJobPayload,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    info!(
-        job_id,
-        image_count = payload.ordered_image_urls.len(),
-        "prepare_for_review — downloading listing photos"
-    );
-
-    client
-        .update_status(
-            UpdateStatusRequest {
-                action: "update_status".into(),
-                job_id: job_id.to_string(),
-                status: "images_downloading".into(),
-                progress: 35,
-                current_step: "Downloading listing photos".into(),
-            },
-            scoped,
-        )
-        .await
-        .map_err(|e| format!("update_status failed for {job_id} at images_downloading: {e}"))?;
-
-    match crate::marketplace::download_job_assets(app, payload).await {
-        Ok((manifest, workspace)) => {
-            info!(
-                job_id,
-                prepared_images = manifest.images.len(),
-                workspace = %workspace.path().display(),
-                "listing photos prepared"
-            );
-            client
-                .update_status(
-                    UpdateStatusRequest {
-                        action: "update_status".into(),
-                        job_id: job_id.to_string(),
-                        status: "ready_for_review".into(),
-                        progress: 45,
-                        current_step: format!(
-                            "Prepared {} listing photo(s); Marketplace form automation pending",
-                            manifest.images.len()
-                        ),
-                    },
-                    scoped,
-                )
-                .await
-                .map_err(|e| format!("update_status failed for {job_id} after assets: {e}"))?;
-
-            let _ = workspace.cleanup();
-
-            fail_job(
-                client,
-                job_id,
-                scoped,
-                "M3_AUTOMATION_NOT_IMPLEMENTED",
-                "Listing photos prepared; Marketplace form automation not yet implemented",
-            )
-            .await?;
-        }
-        Err(err) => {
-            warn!(job_id, error = %err.user_message(), "listing photo preparation failed");
-            fail_job(
-                client,
-                job_id,
-                scoped,
-                "IMAGE_DOWNLOAD_FAILED",
-                &err.user_message(),
-            )
-            .await?;
-        }
-    }
-
     Ok(())
 }
 
@@ -450,5 +420,16 @@ mod tests {
             scoped_job_token: None,
         };
         assert!(payload.is_transport_test());
+    }
+
+    #[test]
+    fn active_job_id_tracks_in_flight_job() {
+        let service = Arc::new(PollingService {
+            enabled: Arc::new(AtomicBool::new(false)),
+            shutdown: Arc::new(AtomicBool::new(false)),
+            busy: Arc::new(AtomicBool::new(false)),
+            active_job_id: Arc::new(Mutex::new(Some("job-123".into()))),
+        });
+        assert_eq!(service.active_job_id().as_deref(), Some("job-123"));
     }
 }

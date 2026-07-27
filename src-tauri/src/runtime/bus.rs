@@ -227,12 +227,21 @@ mod tests {
     }
 
     #[test]
-    fn navigation_error_and_success_tracking() {
+    fn service_bus_clears_cancel_after_successful_service() {
         let bus = test_bus();
-        bus.record_navigation_error("messenger", "timeout");
-        assert_eq!(bus.last_navigation_error().as_deref(), Some("timeout"));
-        bus.record_navigation_success("messenger");
-        assert!(bus.last_navigation_error().is_none());
-        assert_eq!(bus.last_destination().as_deref(), Some("messenger"));
+        bus.request_cancel();
+        bus.clear_cancel();
+        let result = bus.with_service(RuntimeServiceKind::Navigation, |_| Ok(()));
+        assert!(result.is_ok());
+        assert!(!bus.is_cancelled());
+    }
+
+    #[test]
+    fn cancellation_persists_when_aborted_before_lock() {
+        let bus = test_bus();
+        bus.request_cancel();
+        let result = bus.with_service(RuntimeServiceKind::Navigation, |_| Ok(()));
+        assert!(result.is_err());
+        assert!(bus.is_cancelled());
     }
 }

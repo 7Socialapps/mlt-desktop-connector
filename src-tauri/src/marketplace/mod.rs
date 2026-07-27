@@ -1,4 +1,5 @@
 pub mod assets;
+pub mod jobs;
 pub mod payload;
 
 pub use assets::{download_job_assets, AssetError, JobAssetManifest};
