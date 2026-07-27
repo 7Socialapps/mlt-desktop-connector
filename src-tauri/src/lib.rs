@@ -89,6 +89,10 @@ fn detect_browser_runtime(
 fn browser_test_launch(
     services: tauri::State<'_, AppServices>,
 ) -> Result<BrowserRuntimeSnapshot, String> {
+    #[cfg(not(debug_assertions))]
+    {
+        return Err("Browser test commands are not available in production builds".into());
+    }
     services.browser_runtime.test_launch()
 }
 
@@ -96,6 +100,10 @@ fn browser_test_launch(
 fn browser_test_close(
     services: tauri::State<'_, AppServices>,
 ) -> Result<BrowserRuntimeSnapshot, String> {
+    #[cfg(not(debug_assertions))]
+    {
+        return Err("Browser test commands are not available in production builds".into());
+    }
     services.browser_runtime.test_close()
 }
 
