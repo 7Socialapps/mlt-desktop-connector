@@ -11,6 +11,20 @@ src-tauri/target/
 .env.local
 .env.*.local
 
+# Local runtime artifacts (never commit)
+credentials.enc
+credentials.key
+.credential_key
+device_id
+browser-profile/
+job-assets/
+**/diagnostics/
+*.png
+*.jpg
+*.jpeg
+*.webp
+!docs/**/*.png
+
 # Logs
 logs/
 *.log
