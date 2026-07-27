@@ -4,13 +4,13 @@ use std::time::Duration;
 
 use parking_lot::Mutex;
 use tauri::{AppHandle, Emitter};
-use tracing::{info, warn};
+use tracing::{error, info};
 
 use crate::api::types::{
     ClaimJobRequest, CompleteJobRequest, PollJobsRequest, UpdateStatusRequest,
 };
 use crate::api::ConnectorApiClient;
-use crate::credentials::{has_access_token, load_credentials};
+use crate::credentials::{ensure_access_token, has_access_token, is_paired, load_credentials};
 use crate::state::{AppState, ConnectionState};
 use crate::version::CONNECTOR_VERSION;
 
@@ -44,7 +44,7 @@ impl PollingService {
                     break;
                 }
 
-                if !enabled_flag.load(Ordering::SeqCst) || !has_access_token() {
+                if !enabled_flag.load(Ordering::SeqCst) || !is_paired() {
                     tokio::time::sleep(Duration::from_secs(5)).await;
                     continue;
                 }
@@ -54,10 +54,13 @@ impl PollingService {
                     continue;
                 }
 
-                if let Err(err) = poll_and_process(&client, &state, busy_flag.clone()).await {
-                    warn!(error = %err, "job transport error");
-                    state.lock().last_error = Some(err.to_string());
-                    let _ = app.emit("connector://status-changed", state.lock().status_snapshot());
+                match poll_and_process(&client, &state, busy_flag.clone()).await {
+                    Ok(()) => {}
+                    Err(err) => {
+                        error!(error = %err, "job transport handler failed");
+                        state.lock().last_error = Some(err.to_string());
+                        let _ = app.emit("connector://status-changed", state.lock().status_snapshot());
+                    }
                 }
 
                 tokio::time::sleep(Duration::from_secs(10)).await;
@@ -80,9 +83,10 @@ impl PollingService {
 }
 
 pub fn enable_polling_if_authenticated(polling: &PollingService, state: &mut AppState) {
-    if has_access_token() {
+    if is_paired() {
         polling.set_enabled(true);
         state.paired = true;
+        state.needs_reconnect = false;
         state.connection_state = ConnectionState::Idle;
     }
 }
@@ -92,7 +96,16 @@ async fn poll_and_process(
     state: &Arc<Mutex<AppState>>,
     busy: Arc<AtomicBool>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    if !has_access_token() {
+        if !ensure_access_token(client).await? {
+            return Ok(());
+        }
+    }
+
     let creds = load_credentials()?.ok_or("missing credentials")?;
+    if creds.access_token.is_empty() {
+        return Ok(());
+    }
     let device_id = state.lock().device_id.to_string();
 
     let poll = client
@@ -106,12 +119,20 @@ async fn poll_and_process(
             },
             &creds.access_token,
         )
-        .await?;
+        .await
+        .map_err(|e| format!("poll_jobs failed: {e}"))?;
 
     let job = poll.jobs.first().cloned();
     let Some(job) = job else {
         return Ok(());
     };
+
+    info!(
+        job_id = %job.id,
+        status = %job.status,
+        jobs_available = poll.jobs_available,
+        "connector job received from poll_jobs"
+    );
 
     busy.store(true, Ordering::SeqCst);
     let result = process_job(client, &creds, &device_id, &job.id).await;
@@ -125,7 +146,7 @@ async fn process_job(
     device_id: &str,
     job_id: &str,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    info!(job_id, "claiming connector job");
+    info!(job_id, "job started — claiming via transport layer");
 
     let claim = client
         .claim_job(
@@ -139,11 +160,29 @@ async fn process_job(
             },
             &creds.access_token,
         )
-        .await?;
+        .await
+        .map_err(|e| format!("claim_job failed for {job_id}: {e}"))?;
 
-    let scoped = claim
-        .scoped_job_token
-        .ok_or_else(|| "missing scoped job token".to_string())?;
+    if !claim.ok {
+        let msg = claim
+            .error
+            .unwrap_or_else(|| "claim_job returned ok=false".into());
+        return Err(format!(
+            "claim_job rejected for {job_id}: {msg} (code={:?})",
+            claim.error_code
+        )
+        .into());
+    }
+
+    let scoped = claim.scoped_job_token.ok_or_else(|| {
+        format!("claim_job succeeded but scopedJobToken missing for {job_id}")
+    })?;
+
+    info!(
+        job_id,
+        scoped_token_len = scoped.len(),
+        "job claimed — beginning simulated progress updates"
+    );
 
     let steps = [
         ("browser_opening", 10u8, "Opening browser (simulated)"),
@@ -152,6 +191,7 @@ async fn process_job(
     ];
 
     for (status, progress, step) in steps {
+        info!(job_id, status, progress, step, "job progress update");
         client
             .update_status(
                 UpdateStatusRequest {
@@ -163,10 +203,12 @@ async fn process_job(
                 },
                 &scoped,
             )
-            .await?;
+            .await
+            .map_err(|e| format!("update_status failed for {job_id} at {status}: {e}"))?;
         tokio::time::sleep(Duration::from_millis(400)).await;
     }
 
+    info!(job_id, "job completing via transport layer");
     client
         .complete_job(
             CompleteJobRequest {
@@ -176,8 +218,9 @@ async fn process_job(
             },
             &scoped,
         )
-        .await?;
+        .await
+        .map_err(|e| format!("complete_job failed for {job_id}: {e}"))?;
 
-    info!(job_id, "test job completed via transport layer");
+    info!(job_id, "job completed — transport test finished (dashboard should show posted)");
     Ok(())
 }

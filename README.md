@@ -87,7 +87,12 @@ mlt-desktop-connector/
         ├── version.rs        # CONNECTOR_VERSION constant
         ├── config.rs         # Staging-only env config
         ├── device.rs         # UUID device ID persistence
-        ├── credentials.rs    # OS keychain via keyring crate
+        ├── credentials/        # Encrypted app-data credential store (no OS Keychain)
+        │   ├── mod.rs
+        │   ├── store.rs        # AES-256-GCM encrypted file + session cache
+        │   ├── crypto.rs
+        │   ├── permissions.rs  # 0600 / Windows user ACL
+        │   └── types.rs
         ├── logging.rs        # tracing + daily rotating file appender
         ├── state.rs
         ├── api/              # Rust typed HTTP client
@@ -122,6 +127,10 @@ cp .env.staging.example .env
 
 **Never commit:** service-role keys, database URLs, device tokens, Facebook credentials, or production secrets.
 
+Device credentials are stored in an **encrypted file** under the Tauri app-data directory (`credentials.enc` + `credentials.key`), with a single automatic backup (`credentials.enc.bak`). Writes are atomic (temp file → fsync → rename) so reboots mid-write cannot corrupt the last good copy. Restricted to the current OS user (0600 on macOS/Linux).
+
+If credential loading fails, the app shows **Reconnect device** instead of crashing or re-prompting.
+
 ---
 
 ## Development setup
@@ -137,8 +146,7 @@ cp .env.staging.example .env
 ```bash
 cd /Users/drew/Documents/GitHub/mlt-desktop-connector
 npm install
-# Load staging env (dotenv is read by Tauri at runtime from process env)
-export $(grep -v '^#' .env | xargs)
+# `npm run tauri:dev` sources `.env` automatically (Rust reads process env, not Vite alone)
 npm run tauri:dev
 ```
 

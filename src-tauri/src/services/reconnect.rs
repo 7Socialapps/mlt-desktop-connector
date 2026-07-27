@@ -5,11 +5,11 @@ use tauri::{AppHandle, Emitter};
 use tracing::info;
 
 use crate::api::ConnectorApiClient;
-use crate::credentials::{has_access_token, load_credentials};
+use crate::credentials::{ensure_access_token, has_access_token, is_paired};
 use crate::services::heartbeat::HeartbeatService;
 use crate::state::{AppState, ConnectionState};
 
-/// Automatic reconnect framework — stub for Milestone A.
+/// Automatic reconnect framework.
 pub struct ReconnectService;
 
 impl ReconnectService {
@@ -37,33 +37,14 @@ impl ReconnectService {
     }
 
     pub async fn try_refresh_tokens(client: &ConnectorApiClient) -> bool {
-        if !has_access_token() {
+        if !is_paired() {
             return false;
         }
 
-        let Some(creds) = load_credentials().ok().flatten() else {
-            return false;
-        };
-
-        match client.authenticate_device(&creds.refresh_token).await {
-            Ok(resp) if resp.ok => {
-                let updated = crate::credentials::StoredCredentials {
-                    access_token: resp.access_token,
-                    refresh_token: resp.refresh_token,
-                    user_id: creds.user_id,
-                    dealership_id: creds.dealership_id,
-                };
-                if crate::credentials::store_credentials(&updated).is_ok() {
-                    info!("reconnect: refreshed device tokens");
-                    return true;
-                }
-            }
-            Err(err) => {
-                tracing::warn!(error = %err, "reconnect: token refresh failed");
-            }
-            _ => {}
+        if has_access_token() {
+            return true;
         }
 
-        false
+        ensure_access_token(client).await.unwrap_or(false)
     }
 }

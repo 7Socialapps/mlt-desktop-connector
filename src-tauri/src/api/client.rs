@@ -1,7 +1,9 @@
 use std::time::Duration;
 
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
+use serde::de::DeserializeOwned;
 use thiserror::Error;
+use tracing::warn;
 
 use crate::config::AppConfig;
 
@@ -31,6 +33,40 @@ pub struct AuthHeaders {
 pub struct ConnectorApiClient {
     http: reqwest::Client,
     config: AppConfig,
+}
+
+/// Unwrap optional `{ data: ... }` wrappers used by some dashboard clients.
+/// Direct edge-function calls return a flat JSON body.
+fn unwrap_response_payload(value: serde_json::Value) -> serde_json::Value {
+    if value.get("ok").is_none()
+        && value.get("error").is_none()
+        && value.get("data").is_some()
+    {
+        value.get("data").cloned().unwrap_or(value)
+    } else {
+        value
+    }
+}
+
+fn parse_error_body(status: u16, text: &str) -> ApiClientError {
+    if let Ok(err) = serde_json::from_str::<ApiErrorBody>(text) {
+        return ApiClientError::Http {
+            status,
+            message: err.error.unwrap_or_else(|| text.to_string()),
+            code: err.error_code,
+        };
+    }
+    ApiClientError::Http {
+        status,
+        message: text.to_string(),
+        code: None,
+    }
+}
+
+fn parse_success_body<T: DeserializeOwned>(text: &str) -> Result<T, ApiClientError> {
+    let value: serde_json::Value = serde_json::from_str(text)?;
+    let payload = unwrap_response_payload(value);
+    serde_json::from_value(payload).map_err(ApiClientError::from)
 }
 
 impl ConnectorApiClient {
@@ -126,7 +162,7 @@ impl ConnectorApiClient {
         Ok(headers)
     }
 
-    async fn post<T: serde::de::DeserializeOwned>(
+    async fn post<T: DeserializeOwned>(
         &self,
         body: &impl serde::Serialize,
         auth: &AuthHeaders,
@@ -141,26 +177,17 @@ impl ConnectorApiClient {
 
         let status = response.status();
         let text = response.text().await?;
-        let parsed: T = serde_json::from_str(&text).unwrap_or_else(|_| {
-            serde_json::from_str("{}").expect("empty json fallback")
-        });
 
         if !status.is_success() {
-            if let Ok(err) = serde_json::from_str::<ApiErrorBody>(&text) {
-                return Err(ApiClientError::Http {
-                    status: status.as_u16(),
-                    message: err.error.unwrap_or_else(|| text.clone()),
-                    code: err.error_code,
-                });
-            }
-            return Err(ApiClientError::Http {
-                status: status.as_u16(),
-                message: text,
-                code: None,
-            });
+            warn!(
+                http_status = status.as_u16(),
+                body = %text,
+                "connector API error response"
+            );
+            return Err(parse_error_body(status.as_u16(), &text));
         }
 
-        Ok(parsed)
+        parse_success_body(&text)
     }
 
     pub async fn register_device(
@@ -322,5 +349,135 @@ impl Default for AuthHeaders {
             pairing_session_secret: None,
             scoped_job_token: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const POLL_PENDING: &str = r#"{"ok":true,"status":"pairing_pending","accessToken":null,"refreshToken":null,"accessExpiresIn":null,"refreshExpiresIn":null,"deviceId":null,"userId":null,"dealershipId":null}"#;
+
+    const POLL_COMPLETED: &str = r#"{"ok":true,"status":"pairing_completed","accessToken":"access-test-token","refreshToken":"refresh-test-token","accessExpiresIn":3600,"refreshExpiresIn":2592000,"deviceId":"dev-abc","userId":"user-1","dealershipId":"dealer-1"}"#;
+
+    const POLL_COMPLETED_NO_TOKENS: &str = r#"{"ok":true,"status":"pairing_completed","accessToken":null,"refreshToken":null,"accessExpiresIn":null,"refreshExpiresIn":null,"deviceId":"dev-abc","userId":"user-1","dealershipId":"dealer-1"}"#;
+
+    const POLL_ERROR: &str =
+        r#"{"error":"Pairing session not found","errorCode":"PAIRING_NOT_FOUND"}"#;
+
+    const CLAIM_SUCCESS: &str = r#"{"ok":true,"jobId":"job-123","status":"job_claimed","scopedJobToken":"scoped.jwt.token","tokenExpiresInSeconds":1800}"#;
+
+    const UPDATE_STATUS_SUCCESS: &str =
+        r#"{"ok":true,"jobId":"job-123","status":"browser_opening","progress":10}"#;
+
+    const COMPLETE_TEST_JOB: &str = r#"{"ok":true,"jobId":"job-123","status":"posted","listingUrl":"https://www.facebook.com/marketplace/item/9999999999","test":true}"#;
+
+    const CLAIM_CONFLICT: &str =
+        r#"{"error":"Job already claimed","errorCode":"CLAIM_CONFLICT","status":"job_claimed"}"#;
+
+    #[test]
+    fn poll_pairing_pending_matches_deployed_backend_shape() {
+        let parsed: PollPairingSessionResponse =
+            parse_success_body(POLL_PENDING).expect("pending poll should parse");
+        assert!(parsed.ok);
+        assert_eq!(parsed.status, "pairing_pending");
+        assert!(parsed.access_token.is_none());
+    }
+
+    #[test]
+    fn poll_pairing_completed_with_tokens_matches_deployed_backend_shape() {
+        let parsed: PollPairingSessionResponse =
+            parse_success_body(POLL_COMPLETED).expect("completed poll should parse");
+        assert!(parsed.ok);
+        assert_eq!(parsed.status, "pairing_completed");
+        assert_eq!(
+            parsed.access_token.as_deref(),
+            Some("access-test-token")
+        );
+        assert_eq!(parsed.refresh_token.as_deref(), Some("refresh-test-token"));
+        assert_eq!(parsed.access_expires_in, Some(3600));
+        assert_eq!(parsed.user_id.as_deref(), Some("user-1"));
+    }
+
+    #[test]
+    fn poll_pairing_completed_without_tokens_matches_deployed_backend_shape() {
+        let parsed: PollPairingSessionResponse =
+            parse_success_body(POLL_COMPLETED_NO_TOKENS).expect("completed poll should parse");
+        assert!(parsed.ok);
+        assert_eq!(parsed.status, "pairing_completed");
+        assert!(parsed.access_token.is_none());
+        assert_eq!(parsed.device_id.as_deref(), Some("dev-abc"));
+    }
+
+    #[test]
+    fn poll_pairing_error_body_parses_as_api_error() {
+        let err = parse_error_body(403, POLL_ERROR);
+        match err {
+            ApiClientError::Http { status, message, code } => {
+                assert_eq!(status, 403);
+                assert_eq!(message, "Pairing session not found");
+                assert_eq!(code.as_deref(), Some("PAIRING_NOT_FOUND"));
+            }
+            other => panic!("expected HTTP error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn poll_pairing_error_body_deserializes_without_panic_when_missing_ok() {
+        let parsed: PollPairingSessionResponse =
+            parse_success_body(POLL_ERROR).expect("error JSON should deserialize without panic");
+        assert!(!parsed.ok);
+        assert_eq!(parsed.error.as_deref(), Some("Pairing session not found"));
+        assert_eq!(parsed.error_code.as_deref(), Some("PAIRING_NOT_FOUND"));
+    }
+
+    #[test]
+    fn unwraps_optional_data_wrapper() {
+        let wrapped = r#"{"data":{"ok":true,"status":"pairing_pending","accessToken":null,"refreshToken":null,"deviceId":null,"userId":null,"dealershipId":null}}"#;
+        let parsed: PollPairingSessionResponse =
+            parse_success_body(wrapped).expect("wrapped poll should parse");
+        assert!(parsed.ok);
+        assert_eq!(parsed.status, "pairing_pending");
+    }
+
+    #[test]
+    fn claim_job_success_matches_deployed_backend_shape() {
+        let parsed: ClaimJobResponse =
+            parse_success_body(CLAIM_SUCCESS).expect("claim response should parse");
+        assert!(parsed.ok);
+        assert_eq!(parsed.job_id, "job-123");
+        assert_eq!(
+            parsed.scoped_job_token.as_deref(),
+            Some("scoped.jwt.token")
+        );
+    }
+
+    #[test]
+    fn claim_job_conflict_parses_as_http_error() {
+        let err = parse_error_body(409, CLAIM_CONFLICT);
+        match err {
+            ApiClientError::Http { status, code, .. } => {
+                assert_eq!(status, 409);
+                assert_eq!(code.as_deref(), Some("CLAIM_CONFLICT"));
+            }
+            other => panic!("expected HTTP error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn update_status_success_matches_deployed_backend_shape() {
+        let parsed: serde_json::Value =
+            parse_success_body(UPDATE_STATUS_SUCCESS).expect("update_status should parse");
+        assert_eq!(parsed["ok"], true);
+        assert_eq!(parsed["status"], "browser_opening");
+    }
+
+    #[test]
+    fn complete_test_job_matches_deployed_backend_shape() {
+        let parsed: serde_json::Value =
+            parse_success_body(COMPLETE_TEST_JOB).expect("complete_job should parse");
+        assert_eq!(parsed["ok"], true);
+        assert_eq!(parsed["status"], "posted");
+        assert_eq!(parsed["test"], true);
     }
 }

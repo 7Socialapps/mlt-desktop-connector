@@ -14,13 +14,13 @@ use parking_lot::Mutex;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    Manager, RunEvent, WebviewUrl, WebviewWindowBuilder,
+    Emitter, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder,
 };
 use tracing::info;
 
 use api::ConnectorApiClient;
 use config::AppConfig;
-use credentials::has_access_token;
+use crate::credentials::CredentialStatus;
 use lifecycle::{
     focus_main_window, is_shutting_down, mark_instance_ready, spawn_sleep_resume_monitor,
     ShutdownCoordinator,
@@ -29,6 +29,7 @@ use services::{
     enable_polling_if_authenticated, HeartbeatService, PairingCoordinator, PairingUiState,
     PollingService,
 };
+
 use state::{AppState, ConnectionState};
 
 struct AppServices {
@@ -59,6 +60,7 @@ async fn start_pairing_session(
     device_name: Option<String>,
 ) -> Result<PairingUiState, String> {
     let device_id = services.state.lock().device_id.to_string();
+    tracing::info!(device_id = %device_id, device_name = ?device_name, "start_pairing_session command invoked");
     services.pairing.start(device_id, device_name).await
 }
 
@@ -83,16 +85,23 @@ pub fn run() {
             let _log_guard = logging::init_logging(app.handle())
                 .map_err(|e| -> Box<dyn std::error::Error> { e.to_string().into() })?;
 
+            let _cred_store = credentials::init(app.handle())
+                .map_err(|e| -> Box<dyn std::error::Error> { e.to_string().into() })?;
+
             let device_id = device::load_or_create_device_id(app.handle())?;
-            let paired = has_access_token();
+            let cred_status = credentials::bootstrap_from_disk();
+            let paired = cred_status == CredentialStatus::Paired;
+            let needs_reconnect = cred_status == CredentialStatus::NeedsReconnect;
+            let initial_error = credentials::needs_reconnect_message();
 
             let state = Arc::new(Mutex::new(AppState {
                 device_id,
                 environment: config.environment.clone(),
                 paired,
+                needs_reconnect,
                 connection_state: ConnectionState::Starting,
                 last_heartbeat_at: None,
-                last_error: None,
+                last_error: initial_error.clone(),
             }));
 
             mark_instance_ready(&state);
@@ -113,13 +122,60 @@ pub fn run() {
 
             {
                 let mut guard = state.lock();
-                enable_polling_if_authenticated(polling.as_ref(), &mut guard);
-                guard.connection_state = if paired {
-                    ConnectionState::Idle
+                if paired {
+                    enable_polling_if_authenticated(polling.as_ref(), &mut guard);
+                    guard.connection_state = ConnectionState::Idle;
+                } else if needs_reconnect {
+                    guard.connection_state = ConnectionState::Offline;
                 } else {
-                    ConnectionState::Offline
-                };
+                    guard.connection_state = ConnectionState::Offline;
+                }
             }
+
+            let restore_client = api_client.clone();
+            let restore_state = state.clone();
+            let restore_app = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                if !credentials::is_paired() {
+                    return;
+                }
+                if credentials::has_access_token() {
+                    return;
+                }
+                match credentials::ensure_access_token(&restore_client).await {
+                    Ok(true) => {
+                        let mut guard = restore_state.lock();
+                        guard.paired = true;
+                        guard.needs_reconnect = false;
+                        guard.last_error = None;
+                        guard.connection_state = ConnectionState::Idle;
+                        drop(guard);
+                        let _ = restore_app.emit("connector://status-changed", restore_state.lock().status_snapshot());
+                    }
+                    Ok(false) => {
+                        let mut guard = restore_state.lock();
+                        guard.paired = false;
+                        guard.needs_reconnect = true;
+                        if guard.last_error.is_none() {
+                            guard.last_error = credentials::needs_reconnect_message();
+                        }
+                        guard.connection_state = ConnectionState::Offline;
+                        drop(guard);
+                        let _ = restore_app.emit("connector://status-changed", restore_state.lock().status_snapshot());
+                    }
+                    Err(err) => {
+                        tracing::warn!(error = %err, "credential bootstrap failed");
+                        credentials::mark_needs_reconnect(
+                            "Reconnect device — stored credentials are unavailable. Start pairing again.",
+                        );
+                        let mut guard = restore_state.lock();
+                        guard.paired = false;
+                        guard.needs_reconnect = true;
+                        guard.last_error = credentials::needs_reconnect_message();
+                        guard.connection_state = ConnectionState::Offline;
+                    }
+                }
+            });
 
             let shutdown = Arc::new(ShutdownCoordinator::new(heartbeat.clone(), polling.clone()));
             spawn_sleep_resume_monitor(app.handle().clone(), state.clone(), heartbeat);

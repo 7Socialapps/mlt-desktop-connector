@@ -9,7 +9,10 @@ use tracing::{debug, info, warn};
 
 use crate::api::types::{ConnectorOs, FacebookSessionState, HeartbeatRequest};
 use crate::api::ConnectorApiClient;
-use crate::credentials::{clear_credentials, has_access_token, load_credentials};
+use crate::credentials::{
+    self, ensure_access_token, handle_revoked_device, has_access_token, is_paired,
+    load_credentials,
+};
 use crate::state::{AppState, ConnectionState};
 use crate::version::{CONNECTOR_VERSION, DEFAULT_CAPABILITIES};
 
@@ -44,9 +47,21 @@ impl HeartbeatService {
                     break;
                 }
 
-                if !has_access_token() {
+                if !is_paired() {
                     debug!("heartbeat skipped — device not paired");
-                    state.lock().connection_state = ConnectionState::Idle;
+                    {
+                        let mut guard = state.lock();
+                        guard.paired = false;
+                        if credentials::credential_status()
+                            == credentials::CredentialStatus::NeedsReconnect
+                        {
+                            guard.needs_reconnect = true;
+                            if guard.last_error.is_none() {
+                                guard.last_error = credentials::needs_reconnect_message();
+                            }
+                        }
+                        guard.connection_state = ConnectionState::Offline;
+                    }
                     emit_status(&app, &state);
                     tokio::select! {
                         _ = tokio::time::sleep(HEARTBEAT_INTERVAL) => {},
@@ -55,22 +70,58 @@ impl HeartbeatService {
                     continue;
                 }
 
+                if !has_access_token() {
+                    match ensure_access_token(&client).await {
+                        Ok(true) => {
+                            state.lock().paired = true;
+                            state.lock().needs_reconnect = false;
+                            state.lock().last_error = None;
+                        }
+                        Ok(false) => {
+                            {
+                                let mut guard = state.lock();
+                                guard.paired = false;
+                                guard.needs_reconnect = true;
+                                if guard.last_error.is_none() {
+                                    guard.last_error = credentials::needs_reconnect_message();
+                                }
+                                guard.connection_state = ConnectionState::Offline;
+                            }
+                            emit_status(&app, &state);
+                            tokio::time::sleep(HEARTBEAT_INTERVAL).await;
+                            continue;
+                        }
+                        Err(err) => {
+                            warn!(error = %err, "heartbeat token refresh failed");
+                        }
+                    }
+                }
+
                 match send_heartbeat(&client, &state).await {
                     Ok(at) => {
                         backoff = INITIAL_BACKOFF;
-                        state.lock().last_heartbeat_at = Some(at);
-                        state.lock().last_error = None;
-                        state.lock().connection_state = ConnectionState::Connected;
+                        {
+                            let mut guard = state.lock();
+                            guard.last_heartbeat_at = Some(at);
+                            guard.last_error = None;
+                            guard.paired = true;
+                            guard.needs_reconnect = false;
+                            guard.connection_state = ConnectionState::Connected;
+                        }
                         emit_status(&app, &state);
                     }
                     Err(err) => {
                         let msg = err.to_string();
                         if msg.contains("DEVICE_REVOKED") || msg.contains("revoked") {
-                            let _ = clear_credentials();
-                            state.lock().paired = false;
-                            state.lock().connection_state = ConnectionState::Offline;
-                            state.lock().last_error =
-                                Some("Device revoked — pair again from dashboard".into());
+                            let _ = handle_revoked_device();
+                            {
+                                let mut guard = state.lock();
+                                guard.paired = false;
+                                guard.needs_reconnect = true;
+                                guard.connection_state = ConnectionState::Offline;
+                                guard.last_error =
+                                    Some("Device revoked — start pairing again from the dashboard.".into());
+                            }
                             emit_status(&app, &state);
                             tokio::time::sleep(HEARTBEAT_INTERVAL).await;
                             continue;
@@ -78,7 +129,7 @@ impl HeartbeatService {
                         warn!(error = %err, "heartbeat failed");
                         {
                             let mut guard = state.lock();
-                            guard.last_error = Some(err.to_string());
+                            guard.last_error = Some(sanitize_error(&msg));
                             guard.connection_state = ConnectionState::Reconnecting;
                         }
                         emit_status(&app, &state);
@@ -113,13 +164,16 @@ async fn send_heartbeat(
     state: &Arc<Mutex<AppState>>,
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
     let creds = load_credentials()?.ok_or("missing credentials")?;
+    if creds.access_token.is_empty() {
+        return Err("access token unavailable — reconnect required".into());
+    }
     let device_id = state.lock().device_id.to_string();
 
     let request = HeartbeatRequest {
         action: "heartbeat".into(),
         device_id,
-        user_id: creds.user_id.clone(),
-        dealership_id: creds.dealership_id.clone(),
+        user_id: creds.user_id,
+        dealership_id: creds.dealership_id,
         connector_version: CONNECTOR_VERSION.to_string(),
         os: ConnectorOs::detect(),
         capabilities: DEFAULT_CAPABILITIES.iter().map(|s| s.to_string()).collect(),
@@ -132,6 +186,14 @@ async fn send_heartbeat(
         .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })?;
 
     Ok(response.last_heartbeat_at)
+}
+
+fn sanitize_error(message: &str) -> String {
+    if message.contains("Bearer ") || message.len() > 300 {
+        "Connection error — retrying".to_string()
+    } else {
+        message.to_string()
+    }
 }
 
 fn emit_status(app: &AppHandle, state: &Arc<Mutex<AppState>>) {

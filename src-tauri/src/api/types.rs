@@ -166,11 +166,22 @@ pub struct PollPairingSessionRequest {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ApiErrorBody {
+    pub error: Option<String>,
+    pub error_code: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PollPairingSessionResponse {
+    #[serde(default)]
     pub ok: bool,
+    #[serde(default)]
     pub status: String,
     pub access_token: Option<String>,
     pub refresh_token: Option<String>,
+    pub access_expires_in: Option<u64>,
+    pub refresh_expires_in: Option<u64>,
     pub device_id: Option<String>,
     pub user_id: Option<String>,
     pub dealership_id: Option<String>,
@@ -192,7 +203,9 @@ pub struct ClaimJobRequest {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ClaimJobResponse {
+    #[serde(default)]
     pub ok: bool,
+    #[serde(default)]
     pub job_id: String,
     pub scoped_job_token: Option<String>,
     pub error: Option<String>,
@@ -255,12 +268,6 @@ pub struct ExchangePairingCodeResponse {
     pub refresh_token: String,
     pub access_expires_in: u64,
     pub refresh_expires_in: u64,
-    pub error: Option<String>,
-    pub error_code: Option<String>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct ApiErrorBody {
     pub error: Option<String>,
     pub error_code: Option<String>,
 }

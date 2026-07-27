@@ -8,7 +8,7 @@ use tracing::{info, warn};
 
 use crate::api::types::{ConnectorOs, PollPairingSessionRequest};
 use crate::api::ConnectorApiClient;
-use crate::credentials::{store_credentials, StoredCredentials};
+use crate::credentials::{has_access_token, store_credentials, StoredCredentials};
 use crate::state::{AppState, ConnectionState};
 use crate::services::PollingService;
 use crate::version::{CONNECTOR_VERSION, DEFAULT_CAPABILITIES};
@@ -16,7 +16,7 @@ use crate::version::{CONNECTOR_VERSION, DEFAULT_CAPABILITIES};
 const PAIRING_POLL_INTERVAL: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "snake_case")]
 pub struct PairingUiState {
     pub active: bool,
     pub pairing_code: Option<String>,
@@ -60,6 +60,8 @@ impl PairingCoordinator {
     }
 
     pub async fn start(&self, device_id: String, device_name: Option<String>) -> Result<PairingUiState, String> {
+        info!(device_id = %device_id, "create_pairing_session: starting");
+
         let request = crate::api::types::CreatePairingSessionRequest {
             action: "create_pairing_session".into(),
             device_id: device_id.clone(),
@@ -69,14 +71,42 @@ impl PairingCoordinator {
             device_name,
         };
 
-        let created = self
-            .client
-            .create_pairing_session(request)
-            .await
-            .map_err(|e| e.to_string())?;
+        let created = match self.client.create_pairing_session(request).await {
+            Ok(response) => {
+                info!(
+                    ok = response.ok,
+                    has_session = response.session_id.is_some(),
+                    has_code = response.pairing_code.is_some(),
+                    error = ?response.error,
+                    "create_pairing_session: response received"
+                );
+                response
+            }
+            Err(err) => {
+                let msg = err.to_string();
+                warn!(error = %msg, "create_pairing_session: request failed");
+                {
+                    let mut ui = self.ui.lock();
+                    ui.error = Some(msg.clone());
+                    ui.status = "error".into();
+                }
+                let _ = self.app.emit("connector://pairing-changed", self.snapshot());
+                return Err(msg);
+            }
+        };
 
         if !created.ok {
-            return Err(created.error.unwrap_or_else(|| "Pairing session failed".into()));
+            let msg = created
+                .error
+                .unwrap_or_else(|| "Pairing session failed".into());
+            warn!(error = %msg, error_code = ?created.error_code, "create_pairing_session: backend rejected");
+            {
+                let mut ui = self.ui.lock();
+                ui.error = Some(msg.clone());
+                ui.status = "error".into();
+            }
+            let _ = self.app.emit("connector://pairing-changed", self.snapshot());
+            return Err(msg);
         }
 
         let session_id = created
@@ -86,7 +116,11 @@ impl PairingCoordinator {
             .session_secret
             .ok_or_else(|| "Missing sessionSecret".to_string())?;
         let pairing_code = created.pairing_code.clone();
-
+        info!(
+            pairing_code = ?pairing_code,
+            expires_at = ?created.expires_at,
+            "create_pairing_session: session created"
+        );
         {
             let mut ui = self.ui.lock();
             ui.active = true;
@@ -122,38 +156,64 @@ impl PairingCoordinator {
                     {
                         let mut ui = self.ui.lock();
                         ui.status = resp.status.clone();
+                        ui.error = None;
                     }
                     let _ = self.app.emit("connector://pairing-changed", self.snapshot());
 
                     if resp.status == "pairing_completed" {
-                        if let (Some(access), Some(refresh), Some(user_id), Some(dealership_id)) = (
+                        let stored_tokens = if let (
+                            Some(access),
+                            Some(refresh),
+                            Some(user_id),
+                            Some(dealership_id),
+                        ) = (
                             resp.access_token,
                             resp.refresh_token,
                             resp.user_id,
                             resp.dealership_id,
                         ) {
-                            if let Err(e) = store_credentials(&StoredCredentials {
+                            match store_credentials(&StoredCredentials {
                                 access_token: access,
                                 refresh_token: refresh,
                                 user_id,
                                 dealership_id,
                             }) {
-                                warn!(error = %e, "failed to store paired credentials");
-                            } else {
-                                info!("pairing completed — credentials stored");
-                                self.state.lock().paired = true;
-                                self.state.lock().connection_state = ConnectionState::Idle;
-                                self.polling.set_enabled(true);
+                                Ok(()) => {
+                                    info!("pairing completed — credentials stored");
+                                    true
+                                }
+                                Err(e) => {
+                                    warn!(error = %e, "failed to store paired credentials");
+                                    false
+                                }
                             }
+                        } else if has_access_token() {
+                            info!("pairing completed — credentials already stored");
+                            true
+                        } else {
+                            warn!(
+                                status = %resp.status,
+                                "pairing_completed without tokens — waiting for next poll"
+                            );
+                            false
+                        };
+
+                        if stored_tokens {
+                            self.state.lock().paired = true;
+                            self.state.lock().needs_reconnect = false;
+                            self.state.lock().connection_state = ConnectionState::Idle;
+                            self.polling.set_enabled(true);
+                            {
+                                let mut ui = self.ui.lock();
+                                ui.active = false;
+                                ui.status = "pairing_completed".into();
+                                ui.error = None;
+                            }
+                            let _ = self.app.emit("connector://status-changed", ());
+                            let _ = self.app.emit("connector://pairing-changed", self.snapshot());
+                            break;
                         }
-                        {
-                            let mut ui = self.ui.lock();
-                            ui.active = false;
-                            ui.status = "pairing_completed".into();
-                        }
-                        let _ = self.app.emit("connector://status-changed", ());
-                        let _ = self.app.emit("connector://pairing-changed", self.snapshot());
-                        break;
+                        continue;
                     }
 
                     if resp.status == "pairing_expired" {
@@ -165,11 +225,16 @@ impl PairingCoordinator {
                     }
                 }
                 Ok(resp) => {
+                    let msg = resp
+                        .error
+                        .unwrap_or_else(|| format!("Pairing poll failed (status={})", resp.status));
+                    warn!(error = %msg, "poll_pairing_session returned ok=false");
                     let mut ui = self.ui.lock();
-                    ui.error = resp.error.clone();
+                    ui.error = Some(msg);
                     let _ = self.app.emit("connector://pairing-changed", self.snapshot());
                 }
                 Err(err) => {
+                    warn!(error = %err, "poll_pairing_session request failed — retrying");
                     let mut ui = self.ui.lock();
                     ui.error = Some(err.to_string());
                     let _ = self.app.emit("connector://pairing-changed", self.snapshot());
