@@ -270,8 +270,31 @@ async function handleLaunch(id) {
 
   try {
     fs.mkdirSync(dir, { recursive: true });
+    const executablePath = chromium.executablePath();
+    if (!executablePath || !fs.existsSync(executablePath)) {
+      fail(
+        id,
+        "CHROMIUM_NOT_INSTALLED",
+        `Chromium is not installed at ${executablePath || "(unknown path)"}. Click Open Facebook to download it, or reinstall the Desktop Connector.`,
+      );
+      return;
+    }
+    // Gatekeeper quarantine on first-run / DMG-copied Chromium blocks launch.
+    if (process.platform === "darwin") {
+      try {
+        const { spawnSync } = await import("node:child_process");
+        spawnSync("xattr", ["-cr", executablePath], { stdio: "ignore" });
+        const browsersRoot = process.env.PLAYWRIGHT_BROWSERS_PATH;
+        if (browsersRoot) {
+          spawnSync("xattr", ["-cr", browsersRoot], { stdio: "ignore" });
+        }
+      } catch {
+        /* best-effort */
+      }
+    }
     context = await chromium.launchPersistentContext(dir, {
       headless: false,
+      executablePath,
       args: ["--disable-dev-shm-usage"],
     });
     attachDisconnectHandler();

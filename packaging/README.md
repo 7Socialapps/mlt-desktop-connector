@@ -3,6 +3,9 @@
 `scripts/prepare-bundle-resources.sh` populates:
 
 - `browser-sidecar/node_modules/{playwright,playwright-core}` — copied from root `npm ci`
-- `packaging/node/` — Node LTS binary for the build host arch
+- `packaging/node/` — Node LTS binary for the build target arch
+- `packaging/ms-playwright/` — Playwright Chromium for the build target arch
 
 These are embedded via `src-tauri/tauri.conf.json` → `bundle.resources`.
+The packaged app sets `PLAYWRIGHT_BROWSERS_PATH` to `Resources/ms-playwright` and
+clears macOS quarantine (`xattr -cr`) so Open Facebook can launch Chromium.

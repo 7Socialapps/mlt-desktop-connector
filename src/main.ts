@@ -313,14 +313,15 @@ function computeDealerView(
       kind: "not_connected",
       subtitle:
         status.deep_link_message ??
-        "Sign into Facebook to finish connecting. Your password stays with Facebook.",
+        "Sign into Facebook in the Connector’s browser window (not Safari). Your password stays with Facebook.",
       cta: "open_facebook",
     };
   }
 
   return {
     kind: "connected",
-    subtitle: "You’re connected. Keep this app running while you post from MLT.",
+    subtitle:
+      "You’re connected. Keep this app running while you post from MLT. Use the Connector’s Facebook window — not Safari.",
   };
 }
 
@@ -529,19 +530,38 @@ async function retryUpdate() {
   });
 }
 
+function invokeErrorMessage(err: unknown): string {
+  if (typeof err === "string") return err;
+  if (err instanceof Error) return err.message;
+  if (err && typeof err === "object") {
+    const o = err as Record<string, unknown>;
+    if (typeof o.message === "string" && o.message.trim()) return o.message;
+    if (typeof o.error === "string" && o.error.trim()) return o.error;
+    try {
+      return JSON.stringify(err);
+    } catch {
+      /* fall through */
+    }
+  }
+  return String(err ?? "");
+}
+
 function dealerFacebookError(err: unknown): string {
-  const raw = typeof err === "string" ? err : err instanceof Error ? err.message : String(err ?? "");
+  const raw = invokeErrorMessage(err);
   const msg = raw.replace(/^Error:\s*/i, "").trim();
-  if (!msg) {
+  if (!msg || msg === "[object Object]") {
     return "Couldn’t open Facebook. Click Open Facebook to try again.";
+  }
+  if (msg.includes("xattr") || msg.includes("Gatekeeper") || msg.includes("quarantine")) {
+    return msg.length > 220 ? `${msg.slice(0, 200)}…` : msg;
   }
   if (
     msg.includes("missing") ||
     msg.includes("reinstall") ||
     msg.includes("ERR_MODULE") ||
-    msg.includes("playwright")
+    msg.includes("not installed")
   ) {
-    return "Browser components are missing. Quit this app and install the latest Desktop Connector, then try Open Facebook again.";
+    return "Browser components are missing. Quit this app and install the latest Desktop Connector (v1.1.2+), then try Open Facebook again.";
   }
   if (msg.includes("timed out") || msg.includes("timeout") || msg.includes("network")) {
     return "Browser setup timed out. Check your network, then click Open Facebook again.";

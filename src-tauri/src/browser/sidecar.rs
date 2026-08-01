@@ -17,9 +17,84 @@ use tracing::{debug, info, warn};
 use super::types::{SidecarDaemonLine, SidecarDetectResponse, SidecarSimpleResponse};
 
 static RESOURCE_ROOT: OnceLock<PathBuf> = OnceLock::new();
+static PLAYWRIGHT_BROWSERS_ROOT: OnceLock<PathBuf> = OnceLock::new();
 
 pub fn set_resource_root(path: PathBuf) {
     let _ = RESOURCE_ROOT.set(path);
+}
+
+/// Writable or bundled Playwright browsers directory (`PLAYWRIGHT_BROWSERS_PATH`).
+pub fn set_playwright_browsers_path(path: PathBuf) {
+    let _ = PLAYWRIGHT_BROWSERS_ROOT.set(path);
+}
+
+pub fn playwright_browsers_path() -> Option<PathBuf> {
+    if let Ok(custom) = std::env::var("PLAYWRIGHT_BROWSERS_PATH") {
+        let path = PathBuf::from(custom);
+        if !path.as_os_str().is_empty() {
+            return Some(path);
+        }
+    }
+    PLAYWRIGHT_BROWSERS_ROOT.get().cloned().or_else(|| {
+        RESOURCE_ROOT.get().map(|root| root.join("ms-playwright")).filter(|p| p.is_dir())
+    })
+}
+
+/// Clear macOS Gatekeeper quarantine on Chromium so Playwright can launch it.
+pub fn clear_chromium_quarantine(browsers_root: &Path) {
+    #[cfg(target_os = "macos")]
+    {
+        if !browsers_root.exists() {
+            return;
+        }
+        let status = Command::new("xattr")
+            .args(["-cr"])
+            .arg(browsers_root)
+            .status();
+        match status {
+            Ok(s) if s.success() => {
+                info!(path = %browsers_root.display(), "cleared quarantine on Playwright browsers");
+            }
+            Ok(s) => {
+                warn!(
+                    path = %browsers_root.display(),
+                    code = ?s.code(),
+                    "xattr -cr failed — Chromium may be blocked by Gatekeeper"
+                );
+            }
+            Err(err) => {
+                warn!(error = %err, "failed to run xattr -cr on Playwright browsers");
+            }
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = browsers_root;
+    }
+}
+
+/// Prefer bundled Chromium; fall back to a writable Application Support cache
+/// for first-run `playwright install` when the DMG did not embed browsers.
+pub fn configure_playwright_browsers(app_data_dir: &Path) -> PathBuf {
+    let bundled = RESOURCE_ROOT
+        .get()
+        .map(|root| root.join("ms-playwright"))
+        .filter(|p| p.is_dir());
+    let app_cache = app_data_dir.join("ms-playwright");
+
+    let chosen = if let Some(bundled_path) = bundled {
+        // Bundled install — use in-place after clearing quarantine.
+        clear_chromium_quarantine(&bundled_path);
+        bundled_path
+    } else {
+        let _ = std::fs::create_dir_all(&app_cache);
+        clear_chromium_quarantine(&app_cache);
+        app_cache
+    };
+
+    set_playwright_browsers_path(chosen.clone());
+    info!(path = %chosen.display(), "PLAYWRIGHT_BROWSERS_PATH configured");
+    chosen
 }
 
 fn bundled_sidecar_path(name: &str) -> Option<PathBuf> {
@@ -123,6 +198,15 @@ fn apply_sidecar_module_env(cmd: &mut Command, entry: &Path) {
             cmd.env("NODE_PATH", joined);
         }
     }
+    if let Some(browsers) = playwright_browsers_path() {
+        cmd.env(
+            "PLAYWRIGHT_BROWSERS_PATH",
+            browsers.to_string_lossy().into_owned(),
+        );
+    }
+    // Never inherit a cross-compile override from the developer shell — it makes
+    // detect look for the wrong chrome-mac-* folder inside the packaged app.
+    cmd.env_remove("PLAYWRIGHT_HOST_PLATFORM_OVERRIDE");
 }
 
 fn resolve_node_binary() -> PathBuf {

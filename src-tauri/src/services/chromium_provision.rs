@@ -11,9 +11,10 @@ use crate::browser::{
 };
 
 /// First-run Chromium download must never leave the UI on "Setting up…" forever.
-const INSTALL_TIMEOUT: Duration = Duration::from_secs(45);
+/// Bundled builds skip this path; keep headroom for slow networks as fallback.
+const INSTALL_TIMEOUT: Duration = Duration::from_secs(120);
 /// Absolute cap on `active=true` even if the install task misbehaves.
-const ACTIVE_UI_CAP: Duration = Duration::from_secs(50);
+const ACTIVE_UI_CAP: Duration = Duration::from_secs(130);
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -189,6 +190,11 @@ impl ChromiumProvisionService {
             }
         };
 
+        if let Some(browsers) = crate::browser::playwright_browsers_path() {
+            let _ = std::fs::create_dir_all(&browsers);
+            crate::browser::clear_chromium_quarantine(&browsers);
+        }
+
         info!("starting first-run chromium provisioning");
         let install = tauri::async_runtime::spawn_blocking(move || {
             run_sidecar_command::<SidecarSimpleResponse>(&cli_path, "install-chromium")
@@ -211,6 +217,9 @@ impl ChromiumProvisionService {
 
         match result {
             Ok(Ok(resp)) if resp.ok => {
+                if let Some(browsers) = crate::browser::playwright_browsers_path() {
+                    crate::browser::clear_chromium_quarantine(&browsers);
+                }
                 let mut guard = self.state.lock();
                 guard.active = false;
                 guard.progress = 100;

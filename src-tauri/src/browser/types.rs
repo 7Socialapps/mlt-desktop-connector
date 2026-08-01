@@ -107,6 +107,8 @@ pub struct SidecarDetectResponse {
     pub chromium_installed: bool,
     pub chromium_path: Option<String>,
     pub node_version: Option<String>,
+    #[serde(default)]
+    pub browsers_path: Option<String>,
     pub detect_error: Option<String>,
     pub error: Option<String>,
     pub error_code: Option<String>,
