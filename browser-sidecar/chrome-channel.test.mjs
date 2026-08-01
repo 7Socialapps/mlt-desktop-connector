@@ -13,7 +13,7 @@ process.env.MLT_FORCE_BUNDLED_BROWSER = "1";
 const forced = resolveBrowserLaunchTarget();
 assert.equal(forced.mode, "bundled_chromium");
 assert.equal(forced.channel, null);
-assert.match(forced.label, /Chrome for Testing|MLT browser/i);
+assert.match(forced.label, /Google Chrome|bundled/i);
 
 delete process.env.MLT_FORCE_BUNDLED_BROWSER;
 const preferred = resolveBrowserLaunchTarget();
@@ -30,7 +30,9 @@ if (preferred.channel) {
 }
 
 assert.ok(browserLaunchArgs().includes("--disable-blink-features=AutomationControlled"));
-assert.deepEqual(browserIgnoreDefaultArgs(), ["--enable-automation"]);
+assert.ok(browserIgnoreDefaultArgs().includes("--enable-automation"));
+assert.ok(browserIgnoreDefaultArgs().includes("--use-mock-keychain"));
+assert.ok(browserIgnoreDefaultArgs().includes("--password-store=basic"));
 
 if (prev === undefined) {
   delete process.env.MLT_FORCE_BUNDLED_BROWSER;

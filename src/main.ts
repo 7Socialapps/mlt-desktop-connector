@@ -124,7 +124,20 @@ let actionHint: string | null = null;
 let showAbout = false;
 
 const FACEBOOK_LOGIN_HINT =
-  "Sign in in the Connector browser window (not Safari). A one-time Facebook security check is normal. If Facebook asks for a security key, click Try another way and choose password or text message.";
+  "A Chrome window will open — sign into Facebook like you normally do. You only need to do this once on this computer. If asked for a security key, choose Try another way → password or text code.";
+
+const CHROME_INSTALL_HINT =
+  "Install Google Chrome for easiest Facebook login: https://www.google.com/chrome/ — then click Open Facebook again. Do not use Safari.";
+
+function looksLikeSystemChrome(browser: BrowserManagerSnapshot): boolean {
+  const p = (browser.chromium_path || "").toLowerCase();
+  return (
+    p.includes("google chrome") ||
+    p.includes("chrome.exe") ||
+    p.includes("microsoft edge") ||
+    p.includes("msedge")
+  );
+}
 let chromiumProvision: ChromiumProvisionState = {
   active: false,
   progress: 0,
@@ -314,11 +327,14 @@ function computeDealerView(
   }
 
   if (!isFacebookLoggedIn(browser, runtime)) {
+    const chromeReady = looksLikeSystemChrome(browser);
     return {
       kind: "not_connected",
       subtitle:
         status.deep_link_message ??
-        "Sign into Facebook in the Connector browser (not Safari). One-time security check is normal. If it asks for a security key, click Try another way → password or text message.",
+        (chromeReady
+          ? "Click Open Facebook — a normal Chrome window opens. Sign in like you usually do (once on this computer). If asked for a security key: Try another way → password or text code."
+          : "For easiest Facebook login, install Google Chrome (google.com/chrome), then click Open Facebook. Do not use Safari."),
       cta: "open_facebook",
     };
   }
@@ -326,7 +342,7 @@ function computeDealerView(
   return {
     kind: "connected",
     subtitle:
-      "You’re connected. Keep this app running while you post from MLT. Use the Connector’s Facebook window — not Safari.",
+      "You’re connected. Keep this app running while you post from MLT. Facebook stays in the Connector’s Chrome window — not Safari.",
   };
 }
 
@@ -435,7 +451,9 @@ function render(
             : view.kind === "updating" && (view.mode === "ready" || view.mode === "stalled")
               ? "Use the installer window to drag the app into Applications, then click I’ve finished installing."
               : view.kind === "not_connected" && view.cta === "open_facebook"
-                ? "Uses Google Chrome when installed (saved login stays on this Mac). Not Safari."
+                ? looksLikeSystemChrome(browser)
+                  ? "Opens real Google Chrome with a saved MLT login profile on this Mac. Not Safari."
+                  : "Install Google Chrome first for Touch ID / easy 2FA: https://www.google.com/chrome/"
                 : "You can close this window — the connector stays in your menu bar."
         }
       </p>
@@ -443,12 +461,17 @@ function render(
       <details class="dealer-about" ${showAbout ? "open" : ""}>
         <summary>About</summary>
         <p class="helper">Version ${status.connector_version}</p>
-        <p class="helper">Facebook login profile: ${
+        <p class="helper">Browser: ${
+          looksLikeSystemChrome(browser)
+            ? "Google Chrome (recommended)"
+            : "Bundled fallback — install Google Chrome for easiest login"
+        }</p>
+        <p class="helper">Facebook login profile (persists): ${
           browser.profile_path
             ? browser.profile_path
             : "~/Library/Application Support/com.7socialapps.mlt-desktop-connector/browser-profile"
         }</p>
-        <p class="helper">Login survives app restarts. Prefer Google Chrome; otherwise the bundled MLT browser. Never use Safari for this session.</p>
+        <p class="helper">Same Chrome profile is used for Marketplace posting. Never use Safari for this session.</p>
         <button id="open-log-folder" type="button" class="dealer-linkish">Open logs folder</button>
       </details>
     </main>
@@ -608,9 +631,11 @@ async function openFacebookLogin() {
     try {
       actionError = null;
       actionHint = null;
-      // Single command: provisions browser if needed, recovers sidecar, opens facebook.com
-      await invoke<BrowserManagerSnapshot>("browser_open_facebook_login");
-      actionHint = FACEBOOK_LOGIN_HINT;
+      // Provisions if needed, recovers sidecar, opens facebook.com in real Chrome when installed
+      const snap = await invoke<BrowserManagerSnapshot>("browser_open_facebook_login");
+      actionHint = looksLikeSystemChrome(snap)
+        ? FACEBOOK_LOGIN_HINT
+        : `${FACEBOOK_LOGIN_HINT} ${CHROME_INSTALL_HINT}`;
     } catch (err) {
       actionError = dealerFacebookError(err);
       actionHint = FACEBOOK_LOGIN_HINT;

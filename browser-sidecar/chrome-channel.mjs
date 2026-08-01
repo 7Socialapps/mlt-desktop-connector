@@ -111,10 +111,20 @@ export function resolveBrowserLaunchTarget() {
   return {
     mode: "bundled_chromium",
     channel: null,
-    label: "MLT browser (Chrome for Testing)",
+    label: "bundled browser (install Google Chrome for easiest login)",
     process_name_hint: "Chrome for Testing",
     executable_path: null,
   };
+}
+
+/** Dealer-facing URL when system Chrome is missing. */
+export function chromeInstallUrl() {
+  return "https://www.google.com/chrome/";
+}
+
+/** Copy shown when we had to fall back to bundled Chromium. */
+export function bundledBrowserDealerMessage() {
+  return `Install Google Chrome for easiest Facebook login: ${chromeInstallUrl()} — then click Open Facebook again. The built-in browser often blocks passkeys.`;
 }
 
 /**
@@ -132,7 +142,15 @@ export function browserLaunchArgs() {
   ];
 }
 
-/** Args Playwright adds that scream "automated browser" to users and sites. */
+/**
+ * Playwright defaults that break normal Chrome login UX:
+ * - --enable-automation → "Chrome is being controlled…" + automation signals
+ * - --use-mock-keychain / --password-store=basic → block real Keychain / Touch ID / passkeys
+ */
 export function browserIgnoreDefaultArgs() {
-  return ["--enable-automation"];
+  return [
+    "--enable-automation",
+    "--use-mock-keychain",
+    "--password-store=basic",
+  ];
 }

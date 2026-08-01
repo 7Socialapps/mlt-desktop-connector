@@ -29,6 +29,7 @@ import {
 import {
   browserIgnoreDefaultArgs,
   browserLaunchArgs,
+  bundledBrowserDealerMessage,
   resolveBrowserLaunchTarget,
 } from "./chrome-channel.mjs";
 
@@ -295,7 +296,7 @@ async function handleLaunch(id) {
 
     let chromiumPath = launchTarget.executable_path;
     if (launchTarget.channel) {
-      // System Google Chrome / Edge — better passkeys, Touch ID, and normal Chrome UX.
+      // Real Google Chrome / Edge + dedicated MLT user-data-dir (not Chrome for Testing).
       launchOptions.channel = launchTarget.channel;
     } else {
       const executablePath = chromium.executablePath();
@@ -303,10 +304,14 @@ async function handleLaunch(id) {
         fail(
           id,
           "CHROMIUM_NOT_INSTALLED",
-          `No Google Chrome found and Chromium is not installed at ${executablePath || "(unknown path)"}. Install Google Chrome, or click Open Facebook to download the MLT browser, or reinstall the Desktop Connector.`,
+          bundledBrowserDealerMessage(),
         );
         return;
       }
+      // Fallback only — dealers should install Chrome for passkeys / normal 2FA.
+      emitEvent("browser_using_bundled_fallback", {
+        message: bundledBrowserDealerMessage(),
+      });
       chromiumPath = executablePath;
       launchOptions.executablePath = executablePath;
       // Gatekeeper quarantine on first-run / DMG-copied Chromium blocks launch.
