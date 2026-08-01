@@ -108,7 +108,12 @@ async function detectRuntime() {
 async function launchTest() {
   const existing = readTestState();
   if (existing?.pid && isProcessAlive(existing.pid)) {
-    return { ok: true, already_open: true, pid: existing.pid };
+    return {
+      ok: true,
+      already_open: true,
+      pid: existing.pid,
+      headed: true,
+    };
   }
   clearTestState();
 
@@ -124,23 +129,71 @@ async function launchTest() {
   const browser = await chromium.launch({
     headless: false,
     executablePath,
-    args: ["--disable-dev-shm-usage"],
+    args: [
+      "--disable-dev-shm-usage",
+      "--new-window",
+      "--window-size=1280,900",
+      "--window-position=80,60",
+    ],
   });
   const proc = typeof browser.process === "function" ? browser.process() : null;
-  const pid = proc?.pid ?? null;
-  if (pid) {
-    writeTestState({ pid, launched_at: new Date().toISOString() });
-  }
-  const context = await browser.newContext();
+  let pid = proc?.pid ?? null;
+  const context = await browser.newContext({
+    viewport: { width: 1280, height: 900 },
+  });
   const page = await context.newPage();
   await page.goto("about:blank");
-  // Detach — test browser stays open until close-test kills by PID.
-  // Unref so this CLI process can exit after emitting JSON (packaged detect/install).
+  await page.bringToFront().catch(() => {});
+
+  // macOS: force the window onto screen (Dock bounce) before we detach.
+  if (process.platform === "darwin" && executablePath.includes(".app/")) {
+    try {
+      const { spawnSync } = require("node:child_process");
+      const appBundle = executablePath.slice(
+        0,
+        executablePath.indexOf(".app/") + 4,
+      );
+      spawnSync("open", ["-a", appBundle], { stdio: "ignore" });
+    } catch {
+      /* best-effort */
+    }
+  }
+
+  // Require a live PID — prior releases reported launched:true with pid:null
+  // while Chromium never stayed on screen (false "verified" builds).
+  if (!pid) {
+    try {
+      const { spawnSync } = require("node:child_process");
+      const result = spawnSync("pgrep", ["-f", "Google Chrome for Testing"], {
+        encoding: "utf8",
+      });
+      const first = result.stdout?.trim().split(/\s+/).find(Boolean);
+      if (first) pid = Number(first);
+    } catch {
+      /* ignore */
+    }
+  }
+  if (!pid || !isProcessAlive(pid)) {
+    await browser.close().catch(() => {});
+    fail(
+      "LAUNCH_TEST_NO_PID",
+      "Chromium launched but no living process was found — headed window did not stay open",
+    );
+  }
+
+  writeTestState({ pid, launched_at: new Date().toISOString(), headed: true });
   browser.on("disconnected", () => clearTestState());
+  // Keep Chromium alive after CLI exits: detach from Node's process group.
   if (proc && typeof proc.unref === "function") {
     proc.unref();
   }
-  return { ok: true, launched: true, pid, chromium_path: executablePath };
+  return {
+    ok: true,
+    launched: true,
+    pid,
+    headed: true,
+    chromium_path: executablePath,
+  };
 }
 
 async function closeTest() {
@@ -247,7 +300,8 @@ async function main() {
 void main().finally(() => {
   // launch-test keeps Chromium alive via unref'd child; force CLI exit so
   // Rust `run_sidecar_command` is not stuck waiting on an open handle.
+  // Brief delay lets the headed window map before this parent exits.
   if ((process.argv[2] ?? "") === "launch-test") {
-    setImmediate(() => process.exit(0));
+    setTimeout(() => process.exit(0), 750);
   }
 });

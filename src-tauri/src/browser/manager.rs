@@ -921,25 +921,24 @@ impl BrowserManager {
             if let Err(err) = self.daemon.start() {
                 warn!(error = %err, "recover: failed to start browser sidecar");
                 self.record_error(
-                    "Failed to start browser helper",
+                    &format!("Failed to start browser helper: {err}"),
                     Some("SIDECAR_START_FAILED".into()),
                 );
                 self.set_status(BrowserRuntimeStatus::BrowserError);
                 self.emit_changed();
-                return Err(
-                    "Couldn’t start the Facebook browser helper. Click Open Facebook to try again."
-                        .into(),
-                );
+                return Err(format!(
+                    "Couldn’t start the Facebook browser helper: {err}"
+                ));
             }
-            if self
-                .daemon
-                .request("ping", serde_json::json!({}), HEALTH_CHECK_TIMEOUT)
-                .is_err()
-            {
-                warn!("recover: sidecar did not respond to ping");
+            if let Err(ping_err) = self.daemon.request(
+                "ping",
+                serde_json::json!({}),
+                HEALTH_CHECK_TIMEOUT,
+            ) {
+                warn!(error = %ping_err, "recover: sidecar did not respond to ping");
                 let _ = self.daemon.stop();
                 self.record_error(
-                    "Browser helper failed readiness check",
+                    &format!("Browser helper failed readiness check: {ping_err}"),
                     Some("SIDECAR_NOT_READY".into()),
                 );
                 self.set_status(BrowserRuntimeStatus::BrowserError);
@@ -948,9 +947,9 @@ impl BrowserManager {
                     guard.sidecar_running = false;
                 }
                 self.emit_changed();
-                return Err(
-                    "Browser helper didn’t start. Click Open Facebook to try again.".into(),
-                );
+                return Err(format!(
+                    "Browser helper didn’t start: {ping_err}"
+                ));
             }
             {
                 let mut guard = self.state.lock();

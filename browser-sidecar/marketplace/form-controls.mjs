@@ -14,7 +14,8 @@ function q(selectors) {
 }
 
 function labelFor(text) {
-  const escaped = text.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\$&");
+  // Escape \${ so this file's outer template literal does not interpolate.
+  const escaped = text.replace(/[.*+?^\${}()|[\\]\\\\]/g, "\\\\$&");
   const rx = new RegExp("^\\\\s*" + escaped + "\\\\s*$", "i");
   const candidates = Array.from(
     document.querySelectorAll('label, span, div[role="button"], div[role="presentation"]'),
@@ -100,7 +101,7 @@ async function pickComboboxOption(el, optionText) {
   el.scrollIntoView({ block: "center" });
   el.click();
   await new Promise((r) => setTimeout(r, 350));
-  const escaped = String(optionText).replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\$&");
+  const escaped = String(optionText).replace(/[.*+?^\${}()|[\\]\\\\]/g, "\\\\$&");
   const rx = new RegExp("^\\\\s*" + escaped + "\\\\s*", "i");
   const items = Array.from(
     document.querySelectorAll('[role="option"], [role="menuitem"], [role="menuitemradio"]'),

@@ -104,6 +104,8 @@ if [[ "${MLT_SKIP_CHROMIUM_BUNDLE:-0}" != "1" ]]; then
     echo "installing Chromium for host platform…"
   fi
   rm -rf "$MS_PLAYWRIGHT/__dirlock"
+  # Drop prior-arch Chromium so aarch64/x64 dual builds never ship the wrong binary.
+  rm -rf "$MS_PLAYWRIGHT"/chromium-* "$MS_PLAYWRIGHT"/chromium_headless_shell-*
   npx playwright install chromium
   # Headed Open Facebook only — drop headless shell to shrink the DMG.
   rm -rf "$MS_PLAYWRIGHT"/chromium_headless_shell-*
@@ -112,11 +114,18 @@ if [[ "${MLT_SKIP_CHROMIUM_BUNDLE:-0}" != "1" ]]; then
     xattr -cr "$MS_PLAYWRIGHT" 2>/dev/null || true
   fi
   # Sanity: executable must exist for this install.
-  DETECT_JSON="$(
-    PLAYWRIGHT_BROWSERS_PATH="$MS_PLAYWRIGHT" \
-      ${PW_HOST:+PLAYWRIGHT_HOST_PLATFORM_OVERRIDE="$PW_HOST"} \
-      node "$ROOT/browser-sidecar/cli.mjs" detect
-  )"
+  if [[ -n "${PW_HOST:-}" ]]; then
+    DETECT_JSON="$(
+      PLAYWRIGHT_BROWSERS_PATH="$MS_PLAYWRIGHT" \
+        PLAYWRIGHT_HOST_PLATFORM_OVERRIDE="$PW_HOST" \
+        node "$ROOT/browser-sidecar/cli.mjs" detect
+    )"
+  else
+    DETECT_JSON="$(
+      PLAYWRIGHT_BROWSERS_PATH="$MS_PLAYWRIGHT" \
+        node "$ROOT/browser-sidecar/cli.mjs" detect
+    )"
+  fi
   echo "chromium detect: $DETECT_JSON"
   if ! echo "$DETECT_JSON" | grep -q '"chromium_installed":true'; then
     echo "error: Chromium bundle incomplete — detect did not report installed" >&2
@@ -126,5 +135,8 @@ if [[ "${MLT_SKIP_CHROMIUM_BUNDLE:-0}" != "1" ]]; then
 else
   echo "warn: MLT_SKIP_CHROMIUM_BUNDLE=1 — packaged Open Facebook will need first-run download" >&2
 fi
+
+# Fail the build if the sidecar cannot even parse (Open Facebook depends on server.mjs).
+node "$ROOT/browser-sidecar/sidecar-import.test.mjs"
 
 echo "prepare-bundle-resources: done (arch_hint=${ARCH_HINT:-host})"
