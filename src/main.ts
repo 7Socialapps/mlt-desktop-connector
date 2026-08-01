@@ -552,8 +552,18 @@ function dealerFacebookError(err: unknown): string {
   if (!msg || msg === "[object Object]") {
     return "Couldn’t open Facebook. Click Open Facebook to try again.";
   }
+  // Always surface the real helper/Playwright error — dealers cannot debug a blank CTA.
   if (msg.includes("xattr") || msg.includes("Gatekeeper") || msg.includes("quarantine")) {
-    return msg.length > 220 ? `${msg.slice(0, 200)}…` : msg;
+    return msg.length > 400 ? `${msg.slice(0, 380)}…` : msg;
+  }
+  if (
+    msg.includes("SyntaxError") ||
+    msg.includes("Unexpected token") ||
+    msg.includes("ERR_MODULE_NOT_FOUND")
+  ) {
+    return msg.length > 400
+      ? `${msg.slice(0, 380)}…`
+      : `${msg} — reinstall Desktop Connector v1.1.3+.`;
   }
   if (
     msg.includes("missing") ||
@@ -561,13 +571,15 @@ function dealerFacebookError(err: unknown): string {
     msg.includes("ERR_MODULE") ||
     msg.includes("not installed")
   ) {
-    return "Browser components are missing. Quit this app and install the latest Desktop Connector (v1.1.2+), then try Open Facebook again.";
+    return "Browser components are missing. Quit this app and install the latest Desktop Connector (v1.1.3+), then try Open Facebook again.";
   }
   if (msg.includes("timed out") || msg.includes("timeout") || msg.includes("network")) {
-    return "Browser setup timed out. Check your network, then click Open Facebook again.";
+    return msg.length > 400
+      ? `${msg.slice(0, 380)}…`
+      : "Browser setup timed out. Check your network, then click Open Facebook again.";
   }
-  if (msg.length > 220) {
-    return `${msg.slice(0, 200)}…`;
+  if (msg.length > 400) {
+    return `${msg.slice(0, 380)}…`;
   }
   return msg;
 }

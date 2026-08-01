@@ -438,15 +438,46 @@ impl SidecarDaemon {
             .stdout
             .take()
             .ok_or_else(|| anyhow!("sidecar daemon missing stdout"))?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| anyhow!("sidecar daemon missing stderr"))?;
         let stdin = child
             .stdin
             .take()
             .ok_or_else(|| anyhow!("sidecar daemon missing stdin"))?;
 
+        let stderr_buf = Arc::new(Mutex::new(String::new()));
+        let stderr_buf_reader = stderr_buf.clone();
+        thread::spawn(move || {
+            let reader = BufReader::new(stderr);
+            for line in reader.lines() {
+                match line {
+                    Ok(raw) => {
+                        let trimmed = raw.trim();
+                        if trimmed.is_empty() {
+                            continue;
+                        }
+                        warn!(stderr = %trimmed, "browser sidecar stderr");
+                        let mut guard = stderr_buf_reader.lock();
+                        if guard.len() < 4000 {
+                            if !guard.is_empty() {
+                                guard.push('\n');
+                            }
+                            guard.push_str(trimmed);
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+
         let pending = self.pending.clone();
         let event_tx = self.event_tx.clone();
+        let (ready_tx, ready_rx) = mpsc::channel::<()>();
         let reader = thread::spawn(move || {
             let reader = BufReader::new(stdout);
+            let mut signaled_ready = false;
             for line in reader.lines() {
                 match line {
                     Ok(raw) => {
@@ -456,6 +487,10 @@ impl SidecarDaemon {
                         }
                         if let Ok(parsed) = serde_json::from_str::<SidecarDaemonLine>(trimmed) {
                             if let Some(event) = parsed.event.as_deref() {
+                                if event == "ready" && !signaled_ready {
+                                    signaled_ready = true;
+                                    let _ = ready_tx.send(());
+                                }
                                 dispatch_sidecar_event(event, parsed.data.as_ref(), &event_tx);
                                 continue;
                             }
@@ -483,7 +518,40 @@ impl SidecarDaemon {
             reader,
         });
 
-        Ok(())
+        // Fail fast when Node dies on import (e.g. SyntaxError) instead of waiting on ping.
+        match ready_rx.recv_timeout(Duration::from_secs(8)) {
+            Ok(()) => Ok(()),
+            Err(_) => {
+                let mut exited_early = false;
+                let mut exit_code = None;
+                if let Some(proc) = self.process.lock().as_mut() {
+                    match proc.child.try_wait() {
+                        Ok(Some(status)) => {
+                            exited_early = true;
+                            exit_code = status.code();
+                        }
+                        _ => {}
+                    }
+                }
+                let stderr_tail = stderr_buf.lock().clone();
+                if exited_early || !stderr_tail.is_empty() {
+                    let _ = self.stop();
+                    if !stderr_tail.is_empty() {
+                        anyhow::bail!(
+                            "browser sidecar crashed on startup (exit {:?}): {}",
+                            exit_code,
+                            stderr_tail
+                        );
+                    }
+                    anyhow::bail!(
+                        "browser sidecar exited immediately (exit {:?}) before becoming ready",
+                        exit_code
+                    );
+                }
+                // Still running but no ready event — keep process; ping will re-check.
+                Ok(())
+            }
+        }
     }
 
     pub fn stop(&self) -> Result<()> {

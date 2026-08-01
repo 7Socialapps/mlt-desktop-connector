@@ -292,24 +292,44 @@ async function handleLaunch(id) {
         /* best-effort */
       }
     }
+    // Headed, large window — dealers must see Facebook login immediately.
     context = await chromium.launchPersistentContext(dir, {
       headless: false,
       executablePath,
-      args: ["--disable-dev-shm-usage"],
+      viewport: { width: 1280, height: 900 },
+      args: [
+        "--disable-dev-shm-usage",
+        "--new-window",
+        "--window-size=1280,900",
+        "--window-position=80,60",
+        "--start-maximized",
+      ],
     });
     attachDisconnectHandler();
     browserPid = resolveBrowserProcessPid(context);
+    if (!browserPid) {
+      browserPid = await resolveChromiumPidFallback(executablePath);
+    }
     if (browserPid) {
       writeLockFile(browserPid);
     }
     const pages = context.pages();
     page = pages.length > 0 ? pages[0] : await context.newPage();
+    await page.setViewportSize({ width: 1280, height: 900 }).catch(() => {});
+    await activateChromiumWindow(executablePath, browserPid);
     browserState = "ready";
     profileState = "profile_ready";
-    emitEvent("browser_ready", { pid: browserPid });
+    emitEvent("browser_ready", {
+      pid: browserPid,
+      headed: true,
+      chromium_path: executablePath,
+    });
     ok(id, {
       ...currentStatus(),
       launched: true,
+      headed: true,
+      pid: browserPid,
+      chromium_path: executablePath,
       current_url: page.url(),
       page_title: await page.title().catch(() => ""),
     });
@@ -405,14 +425,26 @@ async function handleOpenFacebookLogin(id) {
   });
 
   try {
+    await page.bringToFront().catch(() => {});
     await page.goto("https://www.facebook.com/", {
       waitUntil: "domcontentloaded",
       timeout: 60_000,
     });
     await page.waitForTimeout(1500);
+    const executablePath = (() => {
+      try {
+        return chromium.executablePath();
+      } catch {
+        return null;
+      }
+    })();
+    await activateChromiumWindow(executablePath, browserPid);
     const detection = await runFacebookDetection();
     ok(id, {
       navigated: true,
+      headed: true,
+      pid: browserPid,
+      chromium_path: executablePath,
       facebook: detection ?? lastFacebookDetection,
     });
   } catch (err) {
@@ -425,6 +457,81 @@ async function handleOpenFacebookLogin(id) {
       reason_code: "navigation_failed",
     };
     fail(id, "FACEBOOK_NAV_FAILED", message);
+  }
+}
+
+/**
+ * Force the headed Chromium window onto the user's screen (macOS Dock bounce).
+ * Playwright page.bringToFront alone is often invisible behind the connector.
+ */
+async function activateChromiumWindow(executablePath, pid) {
+  if (process.platform !== "darwin") {
+    try {
+      await page?.bringToFront();
+    } catch {
+      /* ignore */
+    }
+    return;
+  }
+  try {
+    const { spawnSync } = await import("node:child_process");
+    let appBundle = null;
+    if (executablePath && executablePath.includes(".app/")) {
+      appBundle = executablePath.slice(0, executablePath.indexOf(".app/") + 4);
+    }
+    if (appBundle && fs.existsSync(appBundle)) {
+      // open -a brings the app forward and makes Dock show a bounce.
+      spawnSync("open", ["-a", appBundle], { stdio: "ignore" });
+    }
+    const script = [
+      'tell application "System Events"',
+      '  set procs to every process whose name contains "Chrome for Testing"',
+      "  repeat with p in procs",
+      "    set frontmost of p to true",
+      "  end repeat",
+      "end tell",
+    ].join("\n");
+    spawnSync("osascript", ["-e", script], { stdio: "ignore" });
+    if (pid) {
+      spawnSync(
+        "osascript",
+        [
+          "-e",
+          `tell application "System Events" to set frontmost of (first process whose unix id is ${Number(pid)}) to true`,
+        ],
+        { stdio: "ignore" },
+      );
+    }
+  } catch {
+    /* best-effort visibility */
+  }
+  try {
+    await page?.bringToFront();
+  } catch {
+    /* ignore */
+  }
+}
+
+async function resolveChromiumPidFallback(executablePath) {
+  if (process.platform !== "darwin" || !executablePath) {
+    return null;
+  }
+  try {
+    const { spawnSync } = await import("node:child_process");
+    const result = spawnSync("pgrep", ["-f", "Google Chrome for Testing"], {
+      encoding: "utf8",
+    });
+    if (result.status !== 0 || !result.stdout?.trim()) {
+      return null;
+    }
+    const pids = result.stdout
+      .trim()
+      .split(/\s+/)
+      .map((s) => Number(s))
+      .filter((n) => Number.isFinite(n) && n > 0);
+    return pids[0] ?? null;
+  } catch {
+    return null;
   }
 }
 
@@ -710,8 +817,20 @@ async function handleBringBrowserForward(id) {
     return;
   }
   try {
-    await page.bringToFront();
-    ok(id, { brought_forward: true, current_url: page.url() });
+    const executablePath = (() => {
+      try {
+        return chromium.executablePath();
+      } catch {
+        return null;
+      }
+    })();
+    await activateChromiumWindow(executablePath, browserPid);
+    ok(id, {
+      brought_forward: true,
+      pid: browserPid,
+      headed: true,
+      current_url: page.url(),
+    });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     fail(id, "BRING_FORWARD_FAILED", message);

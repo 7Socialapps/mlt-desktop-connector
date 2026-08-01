@@ -1,0 +1,33 @@
+MLT Desktop Connector v1.1.3 — Open Facebook visible-window proof
+Date: 2026-08-01T21:35:59Z
+Host arch: arm64
+
+Installed app:
+  /Applications/MLT Desktop Connector.app
+  /Applications/MLT Desktop Connector.app/Contents/MacOS/mlt-desktop-connector: Mach-O 64-bit executable arm64
+  version=1.1.3
+  chromium_dir=chrome-mac-arm64
+  node=/Applications/MLT Desktop Connector.app/Contents/Resources/node/bin/node: Mach-O 64-bit executable arm64
+
+ROOT CAUSE (v1.1.2 and earlier):
+  browser-sidecar/marketplace/form-controls.mjs used an unescaped ${} inside a
+  template literal. Node threw SyntaxError on import, so server.mjs never started.
+  Open Facebook / Connect could not launch Chromium. Prior launch-test "proof"
+  only exercised cli.mjs (which does not import form-controls) — false green.
+
+PACKAGED SIDECAR PROOF (from /Applications Resources):
+  {"event":"browser_ready","data":{"pid":36441,"headed":true,"chromium_path":"/Applications/MLT Desktop Connector.app/Contents/Resources/ms-playwright/chromium-1234/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing"}}
+  {"id":"3","ok":true,"result":{"navigated":true,"headed":true,"pid":36441,"chromium_path":"/Applications/MLT Desktop Connector.app/Contents/Resources/ms-playwright/chromium-1234/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing","facebook":{"state":"facebook_logged_out","reason_code":"login_page","marketplace_accessible":false,"checked_at":"2026-08-01T21:35:17.486Z","current_url":"https://www.facebook.com/","display_name":null}}}
+
+Live Chromium PID: 36555
+headed: true
+Screenshot: /tmp/mlt113-facebook-window.png (3936602 bytes)
+
+DMG: /Users/drew/Documents/GitHub/mlt-desktop-connector/dist-release/MLT.Desktop.Connector_1.1.3_aarch64.dmg
+
+Quartz check failed: No module named 'Quartz'
+
+VISUAL CONFIRMATION (screencapture /tmp/mlt113-facebook-window.png):
+  On-screen headed browser window showing facebook.com login UI
+  ("Log into Facebook", email/password fields, Log in button).
+  Window chrome (traffic lights) visible — not headless.
