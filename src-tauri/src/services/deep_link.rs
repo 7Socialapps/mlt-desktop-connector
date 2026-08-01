@@ -453,20 +453,30 @@ impl DeepLinkCoordinator {
         self.set_launch_status(LaunchStatus::PairingRequired);
 
         let device_id = self.state.lock().device_id.to_string();
-        match self
-            .pairing
-            .pair_from_launch_session(session_id.to_string(), device_id, None)
-            .await
-        {
-            Ok(_) => {
+        let pair_fut = self.pairing.pair_from_launch_session(
+            session_id.to_string(),
+            device_id,
+            None,
+        );
+        match tokio::time::timeout(std::time::Duration::from_secs(30), pair_fut).await {
+            Ok(Ok(_)) => {
                 self.set_launch_status(LaunchStatus::LaunchSessionRedeemed);
                 self.set_message("Connected".into());
                 true
             }
-            Err(err) => {
+            Ok(Err(err)) => {
                 warn!(error = %err, "auto-pair from launch session failed");
                 self.set_message(
                     "Couldn’t connect automatically. Click Connect in MLT on the web again."
+                        .into(),
+                );
+                self.set_launch_status(LaunchStatus::Error);
+                false
+            }
+            Err(_) => {
+                warn!("auto-pair from launch session timed out");
+                self.set_message(
+                    "Connecting timed out. Keep this app open and click Connect in MLT again."
                         .into(),
                 );
                 self.set_launch_status(LaunchStatus::Error);

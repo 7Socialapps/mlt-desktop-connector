@@ -1,11 +1,19 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use parking_lot::Mutex;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 use tracing::{info, warn};
 
-use crate::browser::{run_sidecar_command, resolve_sidecar_cli, BrowserRuntimeService, SidecarSimpleResponse};
+use crate::browser::{
+    run_sidecar_command, resolve_sidecar_cli, BrowserRuntimeService, SidecarSimpleResponse,
+};
+
+/// First-run Chromium download must never leave the UI on "Setting up…" forever.
+const INSTALL_TIMEOUT: Duration = Duration::from_secs(45);
+/// Absolute cap on `active=true` even if the install task misbehaves.
+const ACTIVE_UI_CAP: Duration = Duration::from_secs(50);
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -42,11 +50,36 @@ impl ChromiumProvisionService {
         let runtime = self.runtime.clone();
         let svc = self.clone();
         tauri::async_runtime::spawn(async move {
-            let _ = runtime.detect();
-            let snap = runtime.snapshot();
+            let detect = tauri::async_runtime::spawn_blocking(move || runtime.detect());
+            let snap = match tokio::time::timeout(Duration::from_secs(15), detect).await {
+                Ok(Ok(Ok(s))) => s,
+                Ok(Ok(Err(err))) => {
+                    warn!(error = %err, "chromium provision: detect failed");
+                    return;
+                }
+                Ok(Err(err)) => {
+                    warn!(error = %err, "chromium provision: detect task failed");
+                    return;
+                }
+                Err(_) => {
+                    warn!("chromium provision: detect timed out");
+                    return;
+                }
+            };
+
             if snap.chromium_installed || !snap.enabled {
                 return;
             }
+            if !snap.playwright_installed {
+                warn!("chromium provision skipped — playwright package missing from bundle");
+                svc.fail(
+                    &app,
+                    "Browser components are missing from this install. Reinstall the Desktop Connector."
+                        .into(),
+                );
+                return;
+            }
+
             svc.run_install(app).await;
         });
     }
@@ -61,6 +94,28 @@ impl ChromiumProvisionService {
         }
         emit(&app, self.snapshot());
 
+        // Safety net: clear active even if install never returns.
+        let watchdog_state = self.state.clone();
+        let watchdog_app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(ACTIVE_UI_CAP).await;
+            let mut guard = watchdog_state.lock();
+            if guard.active {
+                guard.active = false;
+                guard.progress = 0;
+                guard.message = "Setup is taking too long.".into();
+                if guard.error.is_none() {
+                    guard.error = Some(
+                        "Browser setup timed out. You can still click Connect in MLT, then Try again."
+                            .into(),
+                    );
+                }
+                let snap = guard.clone();
+                drop(guard);
+                emit(&watchdog_app, snap);
+            }
+        });
+
         let cli_path = match resolve_sidecar_cli() {
             Ok(path) => path,
             Err(err) => {
@@ -70,10 +125,24 @@ impl ChromiumProvisionService {
         };
 
         info!("starting first-run chromium provisioning");
-        let result = tauri::async_runtime::spawn_blocking(move || {
+        let install = tauri::async_runtime::spawn_blocking(move || {
             run_sidecar_command::<SidecarSimpleResponse>(&cli_path, "install-chromium")
-        })
-        .await;
+        });
+
+        let result = match tokio::time::timeout(INSTALL_TIMEOUT, install).await {
+            Ok(join) => join,
+            Err(_) => {
+                warn!(
+                    timeout_secs = INSTALL_TIMEOUT.as_secs(),
+                    "chromium provisioning timed out"
+                );
+                self.fail(
+                    &app,
+                    "Chromium download timed out. Check your network, then Try again.".into(),
+                );
+                return;
+            }
+        };
 
         match result {
             Ok(Ok(resp)) if resp.ok => {
@@ -81,8 +150,11 @@ impl ChromiumProvisionService {
                 guard.active = false;
                 guard.progress = 100;
                 guard.message = "Chromium is ready.".into();
+                guard.error = None;
+                let snap = guard.clone();
+                drop(guard);
                 let _ = self.runtime.detect();
-                emit(&app, self.snapshot());
+                emit(&app, snap);
                 let _ = app.emit("connector://browser-changed", self.runtime.snapshot());
             }
             Ok(Ok(resp)) => {
@@ -106,8 +178,17 @@ impl ChromiumProvisionService {
         let mut guard = self.state.lock();
         guard.active = false;
         guard.progress = 0;
-        guard.message = "Chromium download failed.".into();
-        guard.error = Some(message);
+        guard.message = "Browser setup didn’t finish.".into();
+        // Keep dealer-facing text short; dump details only in logs.
+        let short = if message.contains("ERR_MODULE_NOT_FOUND") || message.contains("playwright") {
+            "Browser components are missing. Quit the app and reinstall the latest Desktop Connector."
+                .into()
+        } else if message.len() > 180 {
+            "Browser setup failed. Try again, or reinstall the Desktop Connector.".into()
+        } else {
+            message
+        };
+        guard.error = Some(short);
         emit(app, self.snapshot());
     }
 }

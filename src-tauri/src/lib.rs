@@ -400,12 +400,19 @@ pub fn run() {
             let needs_reconnect = cred_status == CredentialStatus::NeedsReconnect;
             let initial_error = credentials::needs_reconnect_message();
 
+            // Never boot into Starting — that paints infinite "Setting up…" if deferred
+            // init is slow. Browser/chromium work runs in the background after shell ready.
+            let initial_connection = if paired && !needs_reconnect {
+                ConnectionState::Idle
+            } else {
+                ConnectionState::Offline
+            };
             let state = Arc::new(Mutex::new(AppState {
                 device_id,
                 environment: config.environment.clone(),
                 paired,
                 needs_reconnect,
-                connection_state: ConnectionState::Starting,
+                connection_state: initial_connection,
                 last_heartbeat_at: None,
                 last_error: initial_error.clone(),
                 current_job_id: None,

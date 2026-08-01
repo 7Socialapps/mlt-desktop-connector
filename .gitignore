@@ -48,3 +48,10 @@ src-tauri/gen/
 
 # Playwright sidecar dev state
 browser-sidecar/.browser-test-state.json
+# Copied into the app bundle at build time (see scripts/prepare-bundle-resources.sh)
+browser-sidecar/node_modules/
+packaging/node/
+
+dist-release/
+packaging/node-arm64/
+packaging/node-x64/

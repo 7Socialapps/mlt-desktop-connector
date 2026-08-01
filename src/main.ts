@@ -98,6 +98,10 @@ interface RuntimeStatus {
   timeout_reason: string | null;
 }
 
+/** Hard caps — dealers must never see infinite Please wait / Force Quit. */
+const SETUP_UI_MAX_MS = 45_000;
+const CONNECTING_UI_MAX_MS = 45_000;
+
 const app = document.querySelector<HTMLDivElement>("#app")!;
 let actionInProgress: string | null = null;
 let actionError: string | null = null;
@@ -116,6 +120,9 @@ let updateState: UpdateUiState = {
   progress: 0,
   error: null,
 };
+let setupStartedAt: number | null = null;
+let connectingStartedAt: number | null = null;
+let forceNotConnected = false;
 
 type DealerView =
   | { kind: "starting"; subtitle: string }
@@ -130,6 +137,16 @@ function isFacebookLoggedIn(browser: BrowserManagerSnapshot, runtime: RuntimeSta
     runtime.facebook_session_state === "logged_in" ||
     browser.facebook_session.state === "facebook_logged_in"
   );
+}
+
+function setupTimedOut(): boolean {
+  if (setupStartedAt == null) return false;
+  return Date.now() - setupStartedAt >= SETUP_UI_MAX_MS;
+}
+
+function connectingTimedOut(): boolean {
+  if (connectingStartedAt == null) return false;
+  return Date.now() - connectingStartedAt >= CONNECTING_UI_MAX_MS;
 }
 
 function computeDealerView(
@@ -154,26 +171,55 @@ function computeDealerView(
     };
   }
 
-  if (status.connection_state === "starting" || chromiumProvision.active) {
-    if (chromiumProvision.active) {
+  const inSetup =
+    !forceNotConnected &&
+    (status.connection_state === "starting" || chromiumProvision.active);
+  if (inSetup) {
+    if (setupStartedAt == null) setupStartedAt = Date.now();
+    if (!setupTimedOut()) {
+      if (chromiumProvision.active) {
+        return {
+          kind: "setup",
+          subtitle: "Finishing a one-time setup. This can take a minute.",
+          progress: chromiumProvision.progress,
+        };
+      }
       return {
-        kind: "setup",
-        subtitle: "Finishing a one-time setup. This can take a minute.",
-        progress: chromiumProvision.progress,
+        kind: "starting",
+        subtitle: "Starting up…",
       };
     }
-    return {
-      kind: "starting",
-      subtitle: "Starting up…",
-    };
+    // Timed out — fall through to Not connected (never Force Quit).
+    forceNotConnected = true;
+    if (!actionError) {
+      actionError =
+        chromiumProvision.error ||
+        "Setup is taking too long. Click Try again, or click Connect in MLT on the web.";
+    }
+  } else if (!chromiumProvision.active && status.connection_state !== "starting") {
+    setupStartedAt = null;
   }
 
   // Auto-pair in progress from dashboard Connect deep link — never show a code.
-  if (!status.paired && (pairing.active || pairing.status === "connecting")) {
-    return {
-      kind: "connecting",
-      subtitle: status.deep_link_message ?? "Connecting… Keep this app open.",
-    };
+  if (
+    !forceNotConnected &&
+    !status.paired &&
+    (pairing.active || pairing.status === "connecting")
+  ) {
+    if (connectingStartedAt == null) connectingStartedAt = Date.now();
+    if (!connectingTimedOut()) {
+      return {
+        kind: "connecting",
+        subtitle: status.deep_link_message ?? "Connecting… Keep this app open.",
+      };
+    }
+    if (!actionError) {
+      actionError =
+        pairing.error ||
+        "Connecting timed out. Click Connect in MLT on the web again.";
+    }
+  } else if (status.paired || (!pairing.active && pairing.status !== "connecting")) {
+    connectingStartedAt = null;
   }
 
   if (status.needs_reconnect || !status.paired) {
@@ -248,11 +294,6 @@ function render(
             ? "Setting up…"
             : "Not connected";
 
-  const aboutPairingCode =
-    showAbout && pairing.pairing_code
-      ? `<p class="helper mono">Dev pairing code: ${pairing.pairing_code}</p>`
-      : "";
-
   app.innerHTML = `
     <main class="dealer-shell">
       <header class="dealer-header">
@@ -310,7 +351,6 @@ function render(
       <details class="dealer-about" ${showAbout ? "open" : ""}>
         <summary>About</summary>
         <p class="helper">Version ${status.connector_version}</p>
-        ${aboutPairingCode}
         <button id="open-log-folder" type="button" class="dealer-linkish">Open logs folder</button>
       </details>
     </main>
@@ -335,6 +375,10 @@ function bindActions(view: DealerView, _status: ConnectorStatus) {
       return;
     }
     if (view.cta === "retry") {
+      forceNotConnected = false;
+      setupStartedAt = null;
+      connectingStartedAt = null;
+      actionError = null;
       void refresh();
       return;
     }
@@ -399,12 +443,16 @@ async function refresh() {
     if (update.phase === "error" && update.message && !actionError) {
       actionError = update.message;
     }
+    if (provision.error && !actionError && !provision.active) {
+      actionError = provision.error;
+    }
     if (pairing.error && !actionError && pairing.status === "error") {
       actionError = pairing.error;
     }
     render(status, pairing, browser, runtime);
   } catch (err) {
-    app.innerHTML = `<section class="dealer-shell"><h1>MLT Desktop Connector</h1><p class="error">Couldn’t load status. Keep the app open and try again in a moment.</p></section>`;
+    app.innerHTML = `<section class="dealer-shell"><h1>MLT Desktop Connector</h1><p class="error">Couldn’t load status. Keep the app open and try again in a moment.</p><div class="dealer-actions"><button id="retry-load" class="dealer-primary">Try again</button></div></section>`;
+    document.querySelector("#retry-load")?.addEventListener("click", () => void refresh());
     console.error(err);
   }
 }
@@ -412,7 +460,8 @@ async function refresh() {
 async function main() {
   const refreshSafe = () => {
     void refresh().catch(() => {
-      app.innerHTML = `<section class="dealer-shell"><h1>MLT Desktop Connector</h1><p class="error">Still starting…</p></section>`;
+      app.innerHTML = `<section class="dealer-shell"><h1>MLT Desktop Connector</h1><p class="error">Still starting…</p><div class="dealer-actions"><button id="retry-load" class="dealer-primary">Try again</button></div></section>`;
+      document.querySelector("#retry-load")?.addEventListener("click", () => void refresh());
     });
   };
 
@@ -435,7 +484,7 @@ async function main() {
   });
 
   window.setTimeout(refreshSafe, 0);
-  setInterval(refreshSafe, 5_000);
+  setInterval(refreshSafe, 2_000);
 }
 
 void main();

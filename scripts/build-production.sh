@@ -19,10 +19,12 @@ export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT/src-tauri/target}"
 
 echo "Building MLT Desktop Connector (production) with MLT_ENV=${MLT_ENV}"
 echo "Supabase: ${MLT_SUPABASE_URL:-unset}"
+# Bundle playwright (+ Node) into Resources so packaged apps don't hang on MODULE_NOT_FOUND.
+bash "$ROOT/scripts/prepare-bundle-resources.sh"
 # Use npx tauri directly — `npm run tauri` sources local `.env` (staging) and
 # would overwrite production compile-time embeds from .env.production.
 npm run build
-npx tauri build
+npx tauri build "$@"
 
 echo
 echo "Bundle output:"

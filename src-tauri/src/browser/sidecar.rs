@@ -108,6 +108,23 @@ pub fn resolve_sidecar_server() -> Result<PathBuf> {
     );
 }
 
+/// Ensure packaged sidecar can resolve `playwright` from adjacent node_modules.
+fn apply_sidecar_module_env(cmd: &mut Command, entry: &Path) {
+    if let Some(dir) = entry.parent() {
+        let _ = cmd.current_dir(dir);
+        let mut node_paths = vec![dir.join("node_modules")];
+        if let Some(root) = RESOURCE_ROOT.get() {
+            node_paths.push(root.join("browser-sidecar").join("node_modules"));
+            node_paths.push(root.join("node_modules"));
+        }
+        let joined = std::env::join_paths(node_paths.iter().filter(|p| p.exists()))
+            .unwrap_or_default();
+        if !joined.is_empty() {
+            cmd.env("NODE_PATH", joined);
+        }
+    }
+}
+
 fn resolve_node_binary() -> PathBuf {
     if let Ok(node) = std::env::var("MLT_NODE_BINARY") {
         let path = PathBuf::from(node);
@@ -179,10 +196,12 @@ pub fn run_sidecar_command<T: serde::de::DeserializeOwned>(
         "playwright sidecar command"
     );
 
-    let output = Command::new(&node)
-        .arg(cli_path)
+    let mut cmd = Command::new(&node);
+    cmd.arg(cli_path)
         .arg(command)
-        .env("MLT_BROWSER_TEST_STATE_FILE", browser_test_state_path())
+        .env("MLT_BROWSER_TEST_STATE_FILE", browser_test_state_path());
+    apply_sidecar_module_env(&mut cmd, cli_path);
+    let output = cmd
         .output()
         .with_context(|| format!("failed to spawn sidecar command `{command}`"))?;
 
@@ -312,6 +331,7 @@ impl SidecarDaemon {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        apply_sidecar_module_env(&mut cmd, &self.server_path);
 
         if let Some(profile) = self.profile_dir.lock().as_ref() {
             cmd.env(
