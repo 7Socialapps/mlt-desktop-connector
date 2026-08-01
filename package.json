@@ -8,7 +8,7 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "tauri": "bash -c 'set -a && [ -f .env ] && . ./.env; set +a && tauri \"$@\"' --",
+    "tauri": "bash -c 'set -a; if [ -z \"${MLT_ENV:-}\" ] && [ -f .env ]; then . ./.env; fi; set +a; tauri \"$@\"' --",
     "tauri:dev": "npm run tauri -- dev",
     "tauri:build": "tauri build",
     "browser:install": "playwright install chromium",
