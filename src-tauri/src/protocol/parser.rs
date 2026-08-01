@@ -11,6 +11,7 @@ pub enum DeepLinkRoute {
     OpenMarketplace,
     OpenVehicleCreate,
     Pair,
+    CheckUpdate,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -40,6 +41,7 @@ const ALLOWED_ROUTES: &[(&str, DeepLinkRoute)] = &[
     ("open-marketplace", DeepLinkRoute::OpenMarketplace),
     ("open-vehicle-create", DeepLinkRoute::OpenVehicleCreate),
     ("pair", DeepLinkRoute::Pair),
+    ("check-update", DeepLinkRoute::CheckUpdate),
 ];
 
 fn normalize_raw_url(raw: &str) -> Result<String, ProtocolError> {
@@ -186,5 +188,11 @@ mod tests {
             parsed.query.get("session"),
             Some(&"abc-123_XYZ".to_string())
         );
+    }
+
+    #[test]
+    fn parses_check_update() {
+        let parsed = parse_deep_link("mlt-desktop://check-update").expect("check-update");
+        assert_eq!(parsed.route, DeepLinkRoute::CheckUpdate);
     }
 }

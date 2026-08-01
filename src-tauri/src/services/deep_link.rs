@@ -10,7 +10,7 @@ use crate::credentials::{self, CredentialStatus};
 use crate::launch_session::{LaunchSessionService, LaunchStatus};
 use crate::protocol::{parse_deep_link, DeepLinkRoute, ProtocolError};
 use crate::runtime::FacebookRuntime;
-use crate::services::{HeartbeatService, PairingCoordinator, PollingService};
+use crate::services::{HeartbeatService, PairingCoordinator, UpdaterService};
 use crate::state::AppState;
 
 pub struct DeepLinkCoordinator {
@@ -20,6 +20,7 @@ pub struct DeepLinkCoordinator {
     facebook_runtime: Arc<FacebookRuntime>,
     launch_sessions: Arc<LaunchSessionService>,
     heartbeat: Arc<HeartbeatService>,
+    updater: Arc<UpdaterService>,
     pending: Mutex<Vec<String>>,
 }
 
@@ -40,6 +41,7 @@ impl DeepLinkCoordinator {
         facebook_runtime: Arc<FacebookRuntime>,
         launch_sessions: Arc<LaunchSessionService>,
         heartbeat: Arc<HeartbeatService>,
+        updater: Arc<UpdaterService>,
     ) -> Self {
         Self {
             app,
@@ -48,6 +50,7 @@ impl DeepLinkCoordinator {
             facebook_runtime,
             launch_sessions,
             heartbeat,
+            updater,
             pending: Mutex::new(Vec::new()),
         }
     }
@@ -112,6 +115,7 @@ impl DeepLinkCoordinator {
                     DeepLinkRoute::Pair => {
                         self.handle_pair(parsed.query.get("session").cloned()).await;
                     }
+                    DeepLinkRoute::CheckUpdate => self.handle_check_update(),
                 }
             }
             Err(err) => {
@@ -128,6 +132,11 @@ impl DeepLinkCoordinator {
     async fn handle_open(&self) {
         self.set_message("MLT Desktop Connector is open.".into());
         self.set_launch_status(LaunchStatus::AppOpened);
+    }
+
+    fn handle_check_update(&self) {
+        self.set_message("Checking for updates…".into());
+        self.updater.request_check(self.app.clone());
     }
 
     async fn handle_pair(&self, _session: Option<String>) {
@@ -496,6 +505,7 @@ impl DeepLinkCoordinator {
             DeepLinkRoute::OpenMarketplace => "open-marketplace",
             DeepLinkRoute::OpenVehicleCreate => "open-vehicle-create",
             DeepLinkRoute::Pair => "pair",
+            DeepLinkRoute::CheckUpdate => "check-update",
         };
         self.state.lock().deep_link_route = Some(label.into());
     }
@@ -523,6 +533,7 @@ impl DeepLinkCoordinator {
             facebook_runtime: self.facebook_runtime.clone(),
             launch_sessions: self.launch_sessions.clone(),
             heartbeat: self.heartbeat.clone(),
+            updater: self.updater.clone(),
         }
     }
 }
@@ -534,6 +545,7 @@ struct DeepLinkHandle {
     facebook_runtime: Arc<FacebookRuntime>,
     launch_sessions: Arc<LaunchSessionService>,
     heartbeat: Arc<HeartbeatService>,
+    updater: Arc<UpdaterService>,
 }
 
 impl DeepLinkHandle {
@@ -545,6 +557,7 @@ impl DeepLinkHandle {
             facebook_runtime: self.facebook_runtime.clone(),
             launch_sessions: self.launch_sessions.clone(),
             heartbeat: self.heartbeat.clone(),
+            updater: self.updater.clone(),
             pending: Mutex::new(Vec::new()),
         };
         coordinator.handle_url(raw_url).await;

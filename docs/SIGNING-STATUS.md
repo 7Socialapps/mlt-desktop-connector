@@ -40,6 +40,10 @@ When Apple Developer ID is available:
 3. Add notarization env vars to CI (`APPLE_ID`, `APPLE_PASSWORD`, `APPLE_TEAM_ID`).
 4. Enable `tauri build` notarization flags in release pipeline.
 
+## Auto-update impact
+
+Unsigned builds **cannot** silently replace the app on macOS (Gatekeeper). The in-app updater downloads the DMG and asks the dealer to drag into Applications (`docs/AUTO-UPDATE.md`). After Developer ID + notarization, prefer `tauri-plugin-updater` for silent install/relaunch.
+
 ## Rollback
 
 Revert to prior unsigned `.dmg` from git tag or rebuild from previous commit; no notarization ticket revocation required while unsigned.

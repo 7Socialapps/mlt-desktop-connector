@@ -1,61 +1,55 @@
-# Auto-update foundation (not yet enabled)
+# Auto-update (GitHub Releases)
 
-**Status:** Documentation only — no updater plugin wired in v1.0.0.
+**Status:** Enabled in **1.0.6+** (best-effort for unsigned builds).
 
-## Goals
+## How it works
 
-- Ship connector fixes without manual DMG redistribution.
-- Respect staging vs production channels.
-- Never auto-update across environments (staging build must not pull production artifacts).
+1. On launch (after ~8s) and every **4 hours**, the connector calls the public GitHub Releases API:
+   `https://api.github.com/repos/7Socialapps/mlt-desktop-connector/releases/latest`
+2. Compares the release tag (semver) to the embedded `CONNECTOR_VERSION`.
+3. If newer, downloads the matching platform asset (never opens the GitHub HTML page):
+   - macOS: `*aarch64.dmg` / `*arm64.dmg` or `*x64.dmg` / `*x86_64.dmg`
+   - Windows: `*setup.exe` (preferred) or `*.msi`
+4. Opens the installer locally:
+   - **macOS:** mounts/opens the DMG and shows: *Drag to Applications to finish update*
+   - **Windows:** launches the setup EXE/MSI
+5. UI shows a single **Updating…** line (Connected/Not connected shell unchanged otherwise).
 
-## Planned approach (Tauri 2)
+Debug (`tauri dev`) builds skip automatic checks. Manual trigger still works via deep link.
 
-1. Add `tauri-plugin-updater` when signing/notarization is available (required for trustworthy updates on macOS).
-2. Host update manifests per channel:
-   - `https://<cdn>/mlt-desktop-connector/staging/latest.json`
-   - `https://cdn>/mlt-desktop-connector/production/latest.json`
-3. Embed channel at build time via `MLT_ENV` (already compiled through `build.rs` / `config.rs`).
-4. Updater checks manifest signature (minisign or Apple-notarized bundle hash — TBD with security review).
-5. Download in background; prompt user before restart (tray notification + status window).
+## Why not `tauri-plugin-updater` yet
 
-## Manifest sketch
+Official Tauri updater requires **signed updater artifacts** + a pubkey in `tauri.conf.json`. Builds are currently unsigned (`docs/SIGNING-STATUS.md`). Using the plugin without signing keys would refuse installs.
 
-```json
-{
-  "version": "1.0.1",
-  "notes": "Facebook session stability fixes",
-  "pub_date": "2026-07-27T12:00:00Z",
-  "platforms": {
-    "darwin-aarch64": {
-      "signature": "...",
-      "url": "https://cdn.example/mlt-desktop-connector/staging/1.0.1/MLT_Desktop_Connector_1.0.1_aarch64.dmg"
-    }
-  }
-}
+When Apple Developer ID + notarization (and optional Tauri minisign keys) are ready, migrate to `tauri-plugin-updater` for silent replace/relaunch.
+
+## Deep link (optional dashboard)
+
+```
+mlt-desktop://check-update
 ```
 
-## Configuration placeholders
+Dashboard Connect may call this to hint “checking for updates” — not required for MVP; launch polling is enough.
 
-When enabled, add to `tauri.conf.json`:
+## Signing caveats (macOS)
 
-```json
-"plugins": {
-  "updater": {
-    "active": false,
-    "endpoints": [],
-    "dialog": true
-  }
-}
-```
-
-## Rollout checklist
-
-- [ ] Apple Developer ID signing + notarization (`docs/SIGNING-STATUS.md`)
-- [ ] CDN bucket with versioned DMGs
-- [ ] CI job publishing manifest after tagged release
-- [ ] Staging soak test before promoting manifest to production channel
-- [ ] Rollback procedure: publish previous manifest version
+| Capability | Unsigned beta | Signed + notarized |
+|---|---|---|
+| Detect newer release | Yes | Yes |
+| Download DMG | Yes | Yes |
+| Silent replace + relaunch | No (Gatekeeper) | Yes (with Tauri updater) |
+| User finishes install | Drag app to Applications | Optional prompt / auto |
 
 ## Rollback
 
-Disable updater in config (`active: false`) and redeploy last known-good DMG link to dashboard download page.
+- Mark previous GitHub Release as latest, or delete the bad release tag.
+- Users already on a bad build: reinstall prior DMG/EXE from Releases API assets.
+- Disable by shipping a build that no-ops the updater service (revert this feature).
+
+## Release checklist
+
+1. Bump `package.json`, `src-tauri/tauri.conf.json`, `Cargo.toml`, `version.rs`.
+2. Build Mac aarch64 (+ x64) production DMGs; upload to `vX.Y.Z`.
+3. Trigger Windows CI: `gh workflow run release-windows.yml -f release_tag=vX.Y.Z`
+4. Confirm: `curl -s …/releases/latest | jq '.tag_name, .assets[].name'`
+5. Install prior version → launch → confirm Updating… → finish install → About shows new version.

@@ -24,6 +24,15 @@ interface ChromiumProvisionState {
   error: string | null;
 }
 
+interface UpdateUiState {
+  active: boolean;
+  phase: "idle" | "checking" | "downloading" | "ready_to_install" | "error";
+  message: string;
+  available_version: string | null;
+  progress: number;
+  error: string | null;
+}
+
 interface PairingState {
   active: boolean;
   pairing_code: string | null;
@@ -99,10 +108,19 @@ let chromiumProvision: ChromiumProvisionState = {
   message: "Setting up…",
   error: null,
 };
+let updateState: UpdateUiState = {
+  active: false,
+  phase: "idle",
+  message: "",
+  available_version: null,
+  progress: 0,
+  error: null,
+};
 
 type DealerView =
   | { kind: "starting"; subtitle: string }
   | { kind: "setup"; subtitle: string; progress?: number }
+  | { kind: "updating"; subtitle: string; progress?: number }
   | { kind: "not_connected"; subtitle: string; cta: "connect" | "open_facebook" | "retry" }
   | { kind: "connected"; subtitle: string };
 
@@ -118,6 +136,22 @@ function computeDealerView(
   browser: BrowserManagerSnapshot,
   runtime: RuntimeStatus,
 ): DealerView {
+  if (updateState.active || updateState.phase === "ready_to_install") {
+    const subtitle =
+      updateState.message ||
+      (updateState.phase === "ready_to_install"
+        ? "Update ready — finish installing, then reopen the app."
+        : "Updating…");
+    return {
+      kind: "updating",
+      subtitle,
+      progress:
+        updateState.phase === "downloading" || updateState.phase === "checking"
+          ? updateState.progress
+          : undefined,
+    };
+  }
+
   if (status.connection_state === "starting" || chromiumProvision.active) {
     if (chromiumProvision.active) {
       return {
@@ -196,9 +230,11 @@ function render(
   const statusTitle =
     view.kind === "connected"
       ? "Connected"
-      : view.kind === "setup" || view.kind === "starting"
-        ? "Setting up…"
-        : "Not connected";
+      : view.kind === "updating"
+        ? "Updating…"
+        : view.kind === "setup" || view.kind === "starting"
+          ? "Setting up…"
+          : "Not connected";
 
   app.innerHTML = `
     <main class="dealer-shell">
@@ -215,7 +251,8 @@ function render(
       </section>
 
       ${
-        view.kind === "setup" && typeof view.progress === "number"
+        (view.kind === "setup" || view.kind === "updating") &&
+        typeof view.progress === "number"
           ? `<div class="progress-bar" role="progressbar" aria-valuenow="${view.progress}" aria-valuemin="0" aria-valuemax="100">
               <div class="progress-fill" style="width:${view.progress}%"></div>
             </div>`
@@ -241,8 +278,12 @@ function render(
         ${
           view.kind === "connected"
             ? `<button id="primary-cta" class="dealer-primary" ${busy ? "disabled" : ""}>Open Facebook</button>`
-            : view.kind === "setup" || view.kind === "starting"
-              ? `<button class="dealer-primary" disabled>Please wait…</button>`
+            : view.kind === "setup" ||
+                view.kind === "starting" ||
+                view.kind === "updating"
+              ? `<button class="dealer-primary" disabled>${
+                  view.kind === "updating" ? "Updating…" : "Please wait…"
+                }</button>`
               : `<button id="primary-cta" class="dealer-primary" ${busy ? "disabled" : ""}>${
                   busy ? "Working…" : primaryLabel
                 }</button>`
@@ -347,14 +388,19 @@ async function openLogFolder() {
 
 async function refresh() {
   try {
-    const [status, pairing, browser, runtime, provision] = await Promise.all([
+    const [status, pairing, browser, runtime, provision, update] = await Promise.all([
       invoke<ConnectorStatus>("get_status"),
       invoke<PairingState>("get_pairing_state"),
       invoke<BrowserManagerSnapshot>("get_browser_status"),
       invoke<RuntimeStatus>("runtime_status"),
       invoke<ChromiumProvisionState>("get_chromium_provision_state"),
+      invoke<UpdateUiState>("get_update_state"),
     ]);
     chromiumProvision = provision;
+    updateState = update;
+    if (update.phase === "error" && update.message && !actionError) {
+      actionError = update.message;
+    }
     render(status, pairing, browser, runtime);
   } catch (err) {
     app.innerHTML = `<section class="dealer-shell"><h1>MLT Desktop Connector</h1><p class="error">Couldn’t load status. Keep the app open and try again in a moment.</p></section>`;
@@ -377,6 +423,10 @@ async function main() {
     listen("connector://startup-ready", refreshSafe),
     listen<ChromiumProvisionState>("connector://chromium-provision", (event) => {
       chromiumProvision = event.payload;
+      refreshSafe();
+    }),
+    listen<UpdateUiState>("connector://update-changed", (event) => {
+      updateState = event.payload;
       refreshSafe();
     }),
   ]).catch(() => {

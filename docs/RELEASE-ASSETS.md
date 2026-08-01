@@ -16,13 +16,15 @@ Until assets are attached, the UI opens this page and does **not** invent a file
 
 ## Expected asset filenames (Tauri defaults)
 
-Publish these names (version from `src-tauri/tauri.conf.json`, currently `1.0.5`):
+Publish these names (version from `src-tauri/tauri.conf.json`, currently `1.0.6`):
 
 | Platform | Example asset name | Notes |
 |---|---|---|
-| macOS Apple Silicon | `MLT Desktop Connector_1.0.5_aarch64.dmg` | Primary Mac download |
-| macOS Intel | `MLT Desktop Connector_1.0.5_x64.dmg` | Optional |
-| Windows | `MLT Desktop Connector_1.0.5_x64-setup.exe` or `…_x64_en-US.msi` | Primary Windows download |
+| macOS Apple Silicon | `MLT Desktop Connector_1.0.6_aarch64.dmg` | Primary Mac download |
+| macOS Intel | `MLT Desktop Connector_1.0.6_x64.dmg` | Optional |
+| Windows | `MLT Desktop Connector_1.0.6_x64-setup.exe` or `…_x64_en-US.msi` | Primary Windows download |
+
+Auto-update (1.0.6+) matches the same suffixes via the Releases API — see `docs/AUTO-UPDATE.md`.
 
 Dashboard matchers (case-insensitive):
 
@@ -43,7 +45,8 @@ Dashboard matchers (case-insensitive):
 
 | Item | Status |
 |---|---|
-| GitHub Release `v1.0.5` | Target — simplified dealer UI + prod tqv |
+| GitHub Release `v1.0.5` | Published (Mac aarch64 + x64 DMGs) — baseline for update test |
+| GitHub Release `v1.0.6` | Target — auto-update enabled + prod tqv |
 | Production Supabase | **tqv** `tqvlledtafjefdtpyocd` (not staging otp) |
 | Windows `.exe` / `.msi` | **CI** — `.github/workflows/release-windows.yml` (workflow_dispatch) |
 | Apple notarization | **Not configured** (`docs/SIGNING-STATUS.md`) |
