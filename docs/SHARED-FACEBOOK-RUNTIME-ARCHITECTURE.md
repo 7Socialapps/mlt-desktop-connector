@@ -43,6 +43,8 @@ Marketplace job asset pipeline remains in `src-tauri/src/marketplace/assets/` (M
 - Messenger scraping, AI replies, conversation parsing
 - Marketplace form filling or posting (M3.3+)
 - Product-specific browser profiles
+- Do not derive location or identity from browser geolocation, IP, or device GPS.
+- Do not store Facebook cookies or refresh tokens in the repository.
 
 ## Milestone alignment
 

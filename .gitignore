@@ -20,6 +20,7 @@ browser-profile/
 job-assets/
 # Runtime diagnostic PNG captures (app-data); not Rust source under src-tauri/src/runtime/diagnostics/
 /diagnostics/
+**/diagnostics/
 *.png
 *.jpg
 *.jpeg
