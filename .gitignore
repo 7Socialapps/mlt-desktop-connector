@@ -26,6 +26,11 @@ job-assets/
 *.jpeg
 *.webp
 !docs/**/*.png
+# Brand / bundle icons (tracked intentionally)
+!assets/**/*.png
+!src-tauri/icons/**/*.png
+!src-tauri/icons/**/*.ico
+!src-tauri/icons/**/*.icns
 
 # Logs
 logs/
