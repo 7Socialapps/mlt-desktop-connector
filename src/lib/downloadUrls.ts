@@ -25,7 +25,9 @@ export const DESKTOP_CONNECTOR_HARDCODED_DOWNLOADS: {
   mac_x64: string | null;
   windows_x64: string | null;
 } = {
-  mac_arm64: null,
-  mac_x64: null,
+  mac_arm64:
+    "https://github.com/7Socialapps/mlt-desktop-connector/releases/download/v1.1.0/MLT.Desktop.Connector_1.1.0_aarch64.dmg",
+  mac_x64:
+    "https://github.com/7Socialapps/mlt-desktop-connector/releases/download/v1.1.0/MLT.Desktop.Connector_1.1.0_x64.dmg",
   windows_x64: null,
 };

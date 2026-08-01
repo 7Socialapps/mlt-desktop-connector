@@ -3,6 +3,7 @@ mod browser;
 mod config;
 mod credentials;
 mod device;
+mod install_location;
 mod launch_session;
 mod lifecycle;
 mod logging;
@@ -280,6 +281,16 @@ fn get_chromium_provision_state(
 #[tauri::command]
 fn get_update_state(services: tauri::State<'_, AppServices>) -> UpdateUiState {
     services.updater.snapshot()
+}
+
+#[tauri::command]
+fn get_runtime_location() -> install_location::RuntimeLocation {
+    install_location::RuntimeLocation::detect()
+}
+
+#[tauri::command]
+fn quit_app(app: tauri::AppHandle) {
+    app.exit(0);
 }
 
 #[tauri::command]
@@ -628,6 +639,8 @@ pub fn run() {
             get_deep_link_state,
             get_chromium_provision_state,
             get_update_state,
+            get_runtime_location,
+            quit_app,
             check_for_updates,
             reopen_update_installer,
             finish_update_install
