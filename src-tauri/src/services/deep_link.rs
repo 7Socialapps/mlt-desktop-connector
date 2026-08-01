@@ -108,6 +108,9 @@ impl DeepLinkCoordinator {
                 match parsed.route {
                     DeepLinkRoute::Open => self.handle_open().await,
                     DeepLinkRoute::ConnectFacebook => {
+                        // Force an update check whenever dealers Connect from the dashboard.
+                        // Connect itself never downloads; the updater UI must surface if older.
+                        self.updater.request_check(self.app.clone());
                         self.handle_connect_facebook(parsed.query.get("session").cloned())
                             .await;
                     }

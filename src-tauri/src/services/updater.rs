@@ -183,7 +183,15 @@ impl UpdaterService {
                 local = CONNECTOR_VERSION,
                 "updater: skipping — running from DMG volume (not Applications)"
             );
-            self.clear_to_idle(app, None);
+            if force_ui {
+                self.set_error(
+                    app,
+                    "Quit this copy, drag MLT Desktop Connector into Applications, open it from Applications, then try again — or use Update in MLT on the web."
+                        .into(),
+                );
+            } else {
+                self.clear_to_idle(app, None);
+            }
             return Ok(());
         }
 
@@ -193,7 +201,15 @@ impl UpdaterService {
                 local = CONNECTOR_VERSION,
                 "updater: skipping — not running from Applications"
             );
-            self.clear_to_idle(app, None);
+            if force_ui {
+                self.set_error(
+                    app,
+                    "Open MLT Desktop Connector from Applications to update, or click Update in MLT on the web."
+                        .into(),
+                );
+            } else {
+                self.clear_to_idle(app, None);
+            }
             return Ok(());
         }
 
