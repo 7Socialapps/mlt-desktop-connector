@@ -6,7 +6,10 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 use tracing::info;
 
+/// Legacy / bundled Chromium profile (also used as the env sentinel path).
 const PROFILE_DIR_NAME: &str = "browser-profile";
+const CHROME_PROFILE_DIR_NAME: &str = "chrome-profile";
+const EDGE_PROFILE_DIR_NAME: &str = "edge-profile";
 const LOCK_FILE_NAME: &str = ".profile.lock";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -54,12 +57,126 @@ pub struct ProfileSnapshot {
     pub checked_at: Option<String>,
 }
 
-pub fn resolve_profile_dir(app: &AppHandle) -> Result<PathBuf, String> {
-    let base = app
-        .path()
+pub fn resolve_app_data_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    app.path()
         .app_data_dir()
-        .map_err(|e| format!("failed to resolve app data directory: {e}"))?;
+        .map_err(|e| format!("failed to resolve app data directory: {e}"))
+}
+
+/// Sentinel path passed to the sidecar as `MLT_BROWSER_PROFILE_DIR`.
+/// The sidecar picks chrome-profile / edge-profile / browser-profile under the parent.
+pub fn resolve_profile_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(resolve_app_data_dir(app)?.join(PROFILE_DIR_NAME))
+}
+
+/// Best-effort preferred profile for UI status before the sidecar reports the active path.
+pub fn resolve_preferred_profile_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    let base = resolve_app_data_dir(app)?;
+    if system_chrome_installed() {
+        let chrome = base.join(CHROME_PROFILE_DIR_NAME);
+        let legacy = base.join(PROFILE_DIR_NAME);
+        if !profile_has_data(&chrome) && profile_has_data(&legacy) {
+            return Ok(legacy);
+        }
+        return Ok(chrome);
+    }
+    if system_edge_installed() {
+        return Ok(base.join(EDGE_PROFILE_DIR_NAME));
+    }
     Ok(base.join(PROFILE_DIR_NAME))
+}
+
+fn profile_has_data(dir: &Path) -> bool {
+    if !dir.exists() {
+        return false;
+    }
+    if dir.join("Default").exists() || dir.join("Local State").exists() {
+        return true;
+    }
+    dir.read_dir()
+        .map(|mut d| {
+            d.any(|e| {
+                e.map(|entry| entry.file_name() != *LOCK_FILE_NAME)
+                    .unwrap_or(false)
+            })
+        })
+        .unwrap_or(false)
+}
+
+fn system_chrome_installed() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        Path::new("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome").exists()
+            || dirs_home_applications_chrome().map(|p| p.exists()).unwrap_or(false)
+    }
+    #[cfg(target_os = "windows")]
+    {
+        std::env::var("PROGRAMFILES")
+            .ok()
+            .map(|pf| Path::new(&pf).join("Google/Chrome/Application/chrome.exe").exists())
+            .unwrap_or(false)
+            || std::env::var("PROGRAMFILES(X86)")
+                .ok()
+                .map(|pf| Path::new(&pf).join("Google/Chrome/Application/chrome.exe").exists())
+                .unwrap_or(false)
+            || std::env::var("LOCALAPPDATA")
+                .ok()
+                .map(|local| Path::new(&local).join("Google/Chrome/Application/chrome.exe").exists())
+                .unwrap_or(false)
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        Path::new("/usr/bin/google-chrome-stable").exists()
+            || Path::new("/usr/bin/google-chrome").exists()
+    }
+}
+
+fn system_edge_installed() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        Path::new("/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge").exists()
+            || dirs_home_applications_edge().map(|p| p.exists()).unwrap_or(false)
+    }
+    #[cfg(target_os = "windows")]
+    {
+        std::env::var("PROGRAMFILES")
+            .ok()
+            .map(|pf| Path::new(&pf).join("Microsoft/Edge/Application/msedge.exe").exists())
+            .unwrap_or(false)
+            || std::env::var("PROGRAMFILES(X86)")
+                .ok()
+                .map(|pf| Path::new(&pf).join("Microsoft/Edge/Application/msedge.exe").exists())
+                .unwrap_or(false)
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        Path::new("/usr/bin/microsoft-edge").exists()
+            || Path::new("/usr/bin/microsoft-edge-stable").exists()
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn dirs_home_applications_chrome() -> Option<PathBuf> {
+    std::env::var_os("HOME").map(|h| {
+        PathBuf::from(h).join("Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn dirs_home_applications_edge() -> Option<PathBuf> {
+    std::env::var_os("HOME").map(|h| {
+        PathBuf::from(h).join("Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge")
+    })
+}
+
+/// Chrome, Edge, and legacy/bundled profile directories under app data.
+pub fn all_profile_dirs(app: &AppHandle) -> Result<Vec<PathBuf>, String> {
+    let base = resolve_app_data_dir(app)?;
+    Ok(vec![
+        base.join(CHROME_PROFILE_DIR_NAME),
+        base.join(EDGE_PROFILE_DIR_NAME),
+        base.join(PROFILE_DIR_NAME),
+    ])
 }
 
 pub fn resolve_diagnostics_dir(app: &AppHandle) -> Result<PathBuf, String> {
@@ -105,6 +222,14 @@ pub fn reset_profile_dir(profile_dir: &Path) -> Result<(), String> {
         fs::remove_dir_all(profile_dir)
             .map_err(|e| format!("failed to remove browser profile: {e}"))?;
         info!(path = %profile_dir.display(), "browser profile directory removed");
+    }
+    Ok(())
+}
+
+/// Reset Chrome, Edge, and bundled/legacy profile dirs so Facebook login is cleared everywhere.
+pub fn reset_all_profile_dirs(app: &AppHandle) -> Result<(), String> {
+    for dir in all_profile_dirs(app)? {
+        reset_profile_dir(&dir)?;
     }
     Ok(())
 }

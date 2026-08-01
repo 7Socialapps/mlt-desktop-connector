@@ -31,6 +31,7 @@ import {
   browserLaunchArgs,
   bundledBrowserDealerMessage,
   resolveBrowserLaunchTarget,
+  resolvePersistentProfileDir,
 } from "./chrome-channel.mjs";
 
 /** @typedef {"stopped"|"starting"|"ready"|"crashed"} BrowserState */
@@ -50,11 +51,21 @@ let lastFacebookDetection = null;
 let browserPid = null;
 /** @type {import("./chrome-channel.mjs").BrowserLaunchTarget | null} */
 let activeLaunchTarget = null;
+/** @type {string | null} Active per-engine profile dir for the current session. */
+let activeProfileDir = null;
 
 const LOCK_FILE = ".profile.lock";
 
-function profileDir() {
+function configuredProfileDir() {
   return process.env.MLT_BROWSER_PROFILE_DIR ?? "";
+}
+
+function profileDir() {
+  if (activeProfileDir) return activeProfileDir;
+  const configured = configuredProfileDir();
+  if (!configured) return "";
+  // Before launch, predict the dir the preferred browser will use.
+  return resolvePersistentProfileDir(configured, resolveBrowserLaunchTarget());
 }
 
 function lockFilePath() {
@@ -203,6 +214,7 @@ async function teardownBrowser(reason = "stop") {
   page = null;
   activeLaunchTarget = null;
   removeLockFile();
+  activeProfileDir = null;
   profileState = inspectProfileOnDisk();
 
   if (previousPid) {
@@ -259,7 +271,15 @@ async function handleLaunch(id) {
 
   await teardownBrowser("relaunch");
 
-  const dir = profileDir();
+  const launchTarget = resolveBrowserLaunchTarget();
+  activeLaunchTarget = launchTarget;
+  const configured = configuredProfileDir();
+  if (!configured) {
+    fail(id, "PROFILE_DIR_MISSING", "MLT_BROWSER_PROFILE_DIR is not configured");
+    return;
+  }
+  const dir = resolvePersistentProfileDir(configured, launchTarget);
+  activeProfileDir = dir;
   if (!dir) {
     fail(id, "PROFILE_DIR_MISSING", "MLT_BROWSER_PROFILE_DIR is not configured");
     return;
@@ -279,12 +299,14 @@ async function handleLaunch(id) {
   browserState = "starting";
   profileState =
     diskState === "profile_missing" ? "profile_initializing" : "profile_ready";
-  emitEvent("browser_starting", {});
+  emitEvent("browser_starting", {
+    browser_mode: launchTarget.mode,
+    browser_label: launchTarget.label,
+    profile_path: dir,
+  });
 
   try {
     fs.mkdirSync(dir, { recursive: true });
-    const launchTarget = resolveBrowserLaunchTarget();
-    activeLaunchTarget = launchTarget;
 
     /** @type {import("playwright").LaunchPersistentContextOptions} */
     const launchOptions = {

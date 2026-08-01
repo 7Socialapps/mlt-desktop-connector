@@ -124,12 +124,12 @@ let actionHint: string | null = null;
 let showAbout = false;
 
 const FACEBOOK_LOGIN_HINT =
-  "A Chrome window will open — sign into Facebook like you normally do. You only need to do this once on this computer. If asked for a security key, choose Try another way → password or text code.";
+  "A Chrome or Edge window will open — sign into Facebook like you normally do. You only need to do this once on this computer. If asked for a security key, choose Try another way → password or text code.";
 
-const CHROME_INSTALL_HINT =
-  "Install Google Chrome for easiest Facebook login: https://www.google.com/chrome/ — then click Open Facebook again. Do not use Safari.";
+const BROWSER_INSTALL_HINT =
+  "Install Google Chrome (https://www.google.com/chrome/) or Microsoft Edge (https://www.microsoft.com/edge) for easiest Facebook login — then click Open Facebook again. Do not use Safari.";
 
-function looksLikeSystemChrome(browser: BrowserManagerSnapshot): boolean {
+function looksLikeSystemBrowser(browser: BrowserManagerSnapshot): boolean {
   const p = (browser.chromium_path || "").toLowerCase();
   return (
     p.includes("google chrome") ||
@@ -137,6 +137,13 @@ function looksLikeSystemChrome(browser: BrowserManagerSnapshot): boolean {
     p.includes("microsoft edge") ||
     p.includes("msedge")
   );
+}
+
+function systemBrowserLabel(browser: BrowserManagerSnapshot): string {
+  const p = (browser.chromium_path || "").toLowerCase();
+  if (p.includes("microsoft edge") || p.includes("msedge")) return "Microsoft Edge";
+  if (p.includes("google chrome") || p.includes("chrome.exe")) return "Google Chrome";
+  return "Chrome or Edge";
 }
 let chromiumProvision: ChromiumProvisionState = {
   active: false,
@@ -327,14 +334,14 @@ function computeDealerView(
   }
 
   if (!isFacebookLoggedIn(browser, runtime)) {
-    const chromeReady = looksLikeSystemChrome(browser);
+    const browserReady = looksLikeSystemBrowser(browser);
     return {
       kind: "not_connected",
       subtitle:
         status.deep_link_message ??
-        (chromeReady
-          ? "Click Open Facebook — a normal Chrome window opens. Sign in like you usually do (once on this computer). If asked for a security key: Try another way → password or text code."
-          : "For easiest Facebook login, install Google Chrome (google.com/chrome), then click Open Facebook. Do not use Safari."),
+        (browserReady
+          ? `Click Open Facebook — a normal ${systemBrowserLabel(browser)} window opens. Sign in like you usually do (once on this computer). If asked for a security key: Try another way → password or text code.`
+          : "For easiest Facebook login, install Google Chrome or Microsoft Edge, then click Open Facebook. Do not use Safari."),
       cta: "open_facebook",
     };
   }
@@ -342,7 +349,7 @@ function computeDealerView(
   return {
     kind: "connected",
     subtitle:
-      "You’re connected. Keep this app running while you post from MLT. Facebook stays in the Connector’s Chrome window — not Safari.",
+      "You’re connected. Keep this app running while you post from MLT. Facebook stays in the Connector’s Chrome or Edge window — not Safari.",
   };
 }
 
@@ -451,9 +458,9 @@ function render(
             : view.kind === "updating" && (view.mode === "ready" || view.mode === "stalled")
               ? "Use the installer window to drag the app into Applications, then click I’ve finished installing."
               : view.kind === "not_connected" && view.cta === "open_facebook"
-                ? looksLikeSystemChrome(browser)
-                  ? "Opens real Google Chrome with a saved MLT login profile on this Mac. Not Safari."
-                  : "Install Google Chrome first for Touch ID / easy 2FA: https://www.google.com/chrome/"
+                ? looksLikeSystemBrowser(browser)
+                  ? `Uses Google Chrome or Microsoft Edge with a saved MLT login profile on this Mac. Not Safari.`
+                  : "Install Google Chrome or Microsoft Edge first for Touch ID / easy 2FA."
                 : "You can close this window — the connector stays in your menu bar."
         }
       </p>
@@ -462,16 +469,16 @@ function render(
         <summary>About</summary>
         <p class="helper">Version ${status.connector_version}</p>
         <p class="helper">Browser: ${
-          looksLikeSystemChrome(browser)
-            ? "Google Chrome (recommended)"
-            : "Bundled fallback — install Google Chrome for easiest login"
+          looksLikeSystemBrowser(browser)
+            ? `${systemBrowserLabel(browser)} (recommended)`
+            : "Bundled fallback — install Google Chrome or Microsoft Edge for easiest login"
         }</p>
         <p class="helper">Facebook login profile (persists): ${
           browser.profile_path
             ? browser.profile_path
-            : "~/Library/Application Support/com.7socialapps.mlt-desktop-connector/browser-profile"
+            : "~/Library/Application Support/com.7socialapps.mlt-desktop-connector/chrome-profile"
         }</p>
-        <p class="helper">Same Chrome profile is used for Marketplace posting. Never use Safari for this session.</p>
+        <p class="helper">Same Chrome or Edge profile is used for Marketplace posting. Never use Safari for this session.</p>
         <button id="open-log-folder" type="button" class="dealer-linkish">Open logs folder</button>
       </details>
     </main>
@@ -605,7 +612,7 @@ function dealerFacebookError(err: unknown): string {
   ) {
     return msg.length > 400
       ? `${msg.slice(0, 380)}…`
-      : `${msg} — reinstall Desktop Connector v1.1.4+.`;
+      : `${msg} — reinstall Desktop Connector v1.1.5+.`;
   }
   if (
     msg.includes("missing") ||
@@ -613,7 +620,7 @@ function dealerFacebookError(err: unknown): string {
     msg.includes("ERR_MODULE") ||
     msg.includes("not installed")
   ) {
-    return "Browser components are missing. Quit this app and install the latest Desktop Connector (v1.1.4+), then try Open Facebook again.";
+    return "Browser components are missing. Quit this app and install the latest Desktop Connector (v1.1.5+), then try Open Facebook again.";
   }
   if (msg.includes("timed out") || msg.includes("timeout") || msg.includes("network")) {
     return msg.length > 400
@@ -631,11 +638,11 @@ async function openFacebookLogin() {
     try {
       actionError = null;
       actionHint = null;
-      // Provisions if needed, recovers sidecar, opens facebook.com in real Chrome when installed
+      // Provisions if needed, recovers sidecar, opens facebook.com in Chrome or Edge when installed
       const snap = await invoke<BrowserManagerSnapshot>("browser_open_facebook_login");
-      actionHint = looksLikeSystemChrome(snap)
+      actionHint = looksLikeSystemBrowser(snap)
         ? FACEBOOK_LOGIN_HINT
-        : `${FACEBOOK_LOGIN_HINT} ${CHROME_INSTALL_HINT}`;
+        : `${FACEBOOK_LOGIN_HINT} ${BROWSER_INSTALL_HINT}`;
     } catch (err) {
       actionError = dealerFacebookError(err);
       actionHint = FACEBOOK_LOGIN_HINT;

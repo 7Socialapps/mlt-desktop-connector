@@ -10,7 +10,10 @@ use tracing::{info, warn};
 
 use super::facebook::{apply_detection, FacebookSessionState, SidecarFacebookDetection};
 use super::marketplace::{apply_marketplace_result, SidecarMarketplaceResult, MarketplaceStatus};
-use super::profile::{inspect_local_profile, reset_profile_dir, resolve_profile_dir, resolve_diagnostics_dir, ProfileStatus};
+use super::profile::{
+    inspect_local_profile, reset_all_profile_dirs, resolve_diagnostics_dir,
+    resolve_preferred_profile_dir, resolve_profile_dir, ProfileStatus,
+};
 use super::runtime::BrowserRuntimeService;
 use super::sidecar::{SidecarDaemon, SidecarEvent};
 use super::types::{
@@ -157,16 +160,19 @@ impl BrowserManager {
     pub fn initialize(&self, app_handle: AppHandle) -> Result<(), String> {
         *self.app_handle.lock() = Some(app_handle.clone());
 
-        if let Ok(profile_path) = resolve_profile_dir(&app_handle) {
-            super::profile::ensure_profile_parent(&profile_path)?;
-            let local_status = inspect_local_profile(&profile_path);
+        if let Ok(sentinel_path) = resolve_profile_dir(&app_handle) {
+            // Sidecar receives the legacy sentinel (`…/browser-profile`) and picks
+            // chrome-profile / edge-profile / browser-profile under the same parent.
+            super::profile::ensure_profile_parent(&sentinel_path)?;
+            let preferred = resolve_preferred_profile_dir(&app_handle).unwrap_or_else(|_| sentinel_path.clone());
+            let local_status = inspect_local_profile(&preferred);
             {
                 let mut guard = self.state.lock();
                 guard.profile_status = local_status;
-                guard.profile_path = Some(profile_path.to_string_lossy().into_owned());
+                guard.profile_path = Some(preferred.to_string_lossy().into_owned());
             }
-            self.daemon.set_profile_dir(profile_path.clone());
-            *self.profile_dir.lock() = Some(profile_path);
+            self.daemon.set_profile_dir(sentinel_path);
+            *self.profile_dir.lock() = Some(preferred);
         }
 
         if let Ok(diag_path) = resolve_diagnostics_dir(&app_handle) {
@@ -394,13 +400,13 @@ impl BrowserManager {
             return Err("Stop the browser before resetting the profile".into());
         }
 
-        let profile_path = self
-            .profile_dir
+        let app = self
+            .app_handle
             .lock()
             .clone()
-            .ok_or_else(|| "Profile directory not configured".to_string())?;
+            .ok_or_else(|| "App handle not configured".to_string())?;
 
-        reset_profile_dir(&profile_path)?;
+        reset_all_profile_dirs(&app)?;
 
         {
             let mut guard = self.state.lock();

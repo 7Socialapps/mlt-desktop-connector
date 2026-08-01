@@ -1,6 +1,11 @@
 /**
- * Prefer system Google Chrome / Edge for Facebook login (Touch ID, passkeys, familiar UX).
- * Fall back to bundled Playwright Chromium ("Chrome for Testing") when none are installed.
+ * Prefer system Google Chrome / Microsoft Edge for Facebook login
+ * (Touch ID, passkeys, familiar UX). Fall back to bundled Playwright
+ * Chromium ("Chrome for Testing") when neither is installed.
+ *
+ * Preference order: Chrome → Edge → bundled Chromium.
+ * Persistent profiles are per engine so cookies never clash:
+ *   chrome-profile / edge-profile / browser-profile (bundled + legacy).
  */
 import fs from "node:fs";
 import os from "node:os";
@@ -76,7 +81,7 @@ function firstExisting(candidates) {
 }
 
 /**
- * Resolve preferred headed browser for Facebook login.
+ * Resolve preferred headed browser for Facebook login / posting.
  * Set MLT_FORCE_BUNDLED_BROWSER=1 to skip system Chrome/Edge (tests / diagnostics).
  * @returns {BrowserLaunchTarget}
  */
@@ -111,7 +116,7 @@ export function resolveBrowserLaunchTarget() {
   return {
     mode: "bundled_chromium",
     channel: null,
-    label: "bundled browser (install Google Chrome for easiest login)",
+    label: "bundled browser (install Google Chrome or Microsoft Edge for easiest login)",
     process_name_hint: "Chrome for Testing",
     executable_path: null,
   };
@@ -122,9 +127,84 @@ export function chromeInstallUrl() {
   return "https://www.google.com/chrome/";
 }
 
+/** Dealer-facing URL when system Edge is an option. */
+export function edgeInstallUrl() {
+  return "https://www.microsoft.com/edge";
+}
+
+/**
+ * Parent of the configured profile dir (`…/browser-profile` → app data).
+ * @param {string} configuredProfileDir
+ */
+export function profileParentDir(configuredProfileDir) {
+  if (!configuredProfileDir) return "";
+  return path.dirname(configuredProfileDir);
+}
+
+/** @param {string} dir */
+function hasProfileData(dir) {
+  if (!dir || !fs.existsSync(dir)) return false;
+  try {
+    if (fs.existsSync(path.join(dir, "Default"))) return true;
+    if (fs.existsSync(path.join(dir, "Local State"))) return true;
+    const entries = fs.readdirSync(dir).filter((n) => n !== ".profile.lock");
+    return entries.length > 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Persistent user-data-dir for the chosen browser engine.
+ * - Chrome → chrome-profile (falls back to legacy browser-profile if that already has a login)
+ * - Edge → edge-profile
+ * - Bundled → browser-profile
+ *
+ * @param {string} configuredProfileDir  typically `{appData}/browser-profile`
+ * @param {BrowserLaunchTarget} target
+ * @returns {string}
+ */
+export function resolvePersistentProfileDir(configuredProfileDir, target) {
+  if (!configuredProfileDir) return "";
+  const parent = profileParentDir(configuredProfileDir);
+  if (!parent) return configuredProfileDir;
+
+  const chromeDir = path.join(parent, "chrome-profile");
+  const edgeDir = path.join(parent, "edge-profile");
+  const legacyDir = path.join(parent, "browser-profile");
+
+  if (target.mode === "system_edge") {
+    return edgeDir;
+  }
+  if (target.mode === "system_chrome") {
+    // Keep existing Facebook sessions that lived in browser-profile (pre-1.1.5).
+    if (!hasProfileData(chromeDir) && hasProfileData(legacyDir)) {
+      return legacyDir;
+    }
+    return chromeDir;
+  }
+  return legacyDir;
+}
+
+/** All profile dirs under app data (for reset). */
+export function allPersistentProfileDirs(configuredProfileDir) {
+  const parent = profileParentDir(configuredProfileDir);
+  if (!parent) {
+    return configuredProfileDir ? [configuredProfileDir] : [];
+  }
+  return [
+    path.join(parent, "chrome-profile"),
+    path.join(parent, "edge-profile"),
+    path.join(parent, "browser-profile"),
+  ];
+}
+
 /** Copy shown when we had to fall back to bundled Chromium. */
 export function bundledBrowserDealerMessage() {
-  return `Install Google Chrome for easiest Facebook login: ${chromeInstallUrl()} — then click Open Facebook again. The built-in browser often blocks passkeys.`;
+  return (
+    `Install Google Chrome (${chromeInstallUrl()}) or Microsoft Edge (${edgeInstallUrl()}) ` +
+    `for easiest Facebook login — then click Open Facebook again. The built-in browser often blocks passkeys.`
+  );
 }
 
 /**
@@ -143,7 +223,7 @@ export function browserLaunchArgs() {
 }
 
 /**
- * Playwright defaults that break normal Chrome login UX:
+ * Playwright defaults that break normal Chrome/Edge login UX:
  * - --enable-automation → "Chrome is being controlled…" + automation signals
  * - --use-mock-keychain / --password-store=basic → block real Keychain / Touch ID / passkeys
  */

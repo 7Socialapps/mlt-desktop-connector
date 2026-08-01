@@ -106,7 +106,7 @@ async function detectRuntime() {
         ? chromiumPath
         : chromiumPath || null;
     if (!result.chromium_installed && chromiumPath) {
-      result.detect_error = `No Google Chrome found; Chromium binary missing at ${chromiumPath}`;
+      result.detect_error = `No Google Chrome or Microsoft Edge found; Chromium binary missing at ${chromiumPath}`;
     }
   } catch (err) {
     result.chromium_installed = Boolean(
