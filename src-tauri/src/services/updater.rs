@@ -4,6 +4,10 @@
 //! Until Apple/Windows code signing and Tauri updater signing are configured,
 //! we poll the public Releases API, download the matching installer, and open
 //! it for the user (macOS DMG → drag to Applications; Windows setup.exe/msi).
+//!
+//! After the installer opens, UI must stay finishable: clear “Installer open”
+//! copy, an “I’ve finished installing” relaunch, and a 2-minute stall timeout
+//! with Retry / Open installer again — never a forever-disabled Updating button.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -23,6 +27,8 @@ const CHECK_INTERVAL: Duration = Duration::from_secs(4 * 60 * 60);
 #[cfg(not(debug_assertions))]
 const INITIAL_DELAY: Duration = Duration::from_secs(8);
 const HTTP_TIMEOUT: Duration = Duration::from_secs(120);
+/// If the user is still on this old binary after the installer opened, unstick UI.
+const INSTALL_STALL_TIMEOUT: Duration = Duration::from_secs(120);
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -31,6 +37,8 @@ pub enum UpdatePhase {
     Checking,
     Downloading,
     ReadyToInstall,
+    /// Installer was opened but this process is still the old binary after the stall timeout.
+    InstallStalled,
     Error,
 }
 
@@ -43,6 +51,9 @@ pub struct UpdateUiState {
     pub available_version: Option<String>,
     pub progress: u8,
     pub error: Option<String>,
+    /// Local path to the downloaded installer (DMG / EXE) for “Open installer again”.
+    pub installer_path: Option<String>,
+    pub timed_out: bool,
 }
 
 impl Default for UpdateUiState {
@@ -54,6 +65,8 @@ impl Default for UpdateUiState {
             available_version: None,
             progress: 0,
             error: None,
+            installer_path: None,
+            timed_out: false,
         }
     }
 }
@@ -62,6 +75,8 @@ pub struct UpdaterService {
     state: Arc<Mutex<UpdateUiState>>,
     /// Prevent overlapping update runs.
     in_flight: Arc<Mutex<bool>>,
+    /// Generation token so a later update run cancels a prior stall timer.
+    stall_generation: Arc<Mutex<u64>>,
 }
 
 impl UpdaterService {
@@ -69,6 +84,7 @@ impl UpdaterService {
         Arc::new(Self {
             state: Arc::new(Mutex::new(UpdateUiState::default())),
             in_flight: Arc::new(Mutex::new(false)),
+            stall_generation: Arc::new(Mutex::new(0)),
         })
     }
 
@@ -110,7 +126,33 @@ impl UpdaterService {
         });
     }
 
-    async fn check_and_apply(&self, app: &AppHandle, force_ui: bool) {
+    /// Re-open the already-downloaded installer (DMG / setup).
+    pub fn reopen_installer(&self) -> Result<(), String> {
+        let path = {
+            let guard = self.state.lock();
+            guard
+                .installer_path
+                .clone()
+                .ok_or_else(|| "No installer file on this computer yet. Click Retry.".to_string())?
+        };
+        let path = PathBuf::from(path);
+        if !path.exists() {
+            return Err("Installer file is missing. Click Retry to download again.".into());
+        }
+        open_installer(&path)?;
+        info!(path = %path.display(), "updater: reopened installer");
+        Ok(())
+    }
+
+    /// After the user dragged to Applications: launch the installed app and exit this process.
+    pub fn finish_and_relaunch(&self, app: &AppHandle) -> Result<(), String> {
+        schedule_relaunch_installed_app()?;
+        info!("updater: scheduled relaunch from Applications — exiting old process");
+        app.exit(0);
+        Ok(())
+    }
+
+    async fn check_and_apply(self: &Arc<Self>, app: &AppHandle, force_ui: bool) {
         {
             let mut guard = self.in_flight.lock();
             if *guard {
@@ -131,7 +173,8 @@ impl UpdaterService {
         }
     }
 
-    async fn run_check(&self, app: &AppHandle, force_ui: bool) -> Result<(), String> {
+    async fn run_check(self: &Arc<Self>, app: &AppHandle, force_ui: bool) -> Result<(), String> {
+        self.bump_stall_generation();
         self.set_phase(
             app,
             UpdatePhase::Checking,
@@ -139,6 +182,8 @@ impl UpdaterService {
             None,
             5,
             force_ui,
+            None,
+            false,
         );
 
         let release = fetch_latest_release().await?;
@@ -175,11 +220,16 @@ impl UpdaterService {
             Some(remote_version.clone()),
             20,
             true,
+            None,
+            false,
         );
         focus_main_window(app);
 
         let dest = download_dir(app)?.join(&asset.name);
         download_file(&asset.browser_download_url, &dest, app, self).await?;
+
+        open_installer(&dest)?;
+        info!(path = %dest.display(), "updater: opened installer");
 
         self.set_phase(
             app,
@@ -188,13 +238,67 @@ impl UpdaterService {
             Some(remote_version.clone()),
             100,
             true,
+            Some(dest.display().to_string()),
+            false,
         );
-
-        open_installer(&dest)?;
-        info!(path = %dest.display(), "updater: opened installer");
+        // Keep our window visible with finishable CTA — do not leave “Updating…” disabled.
+        focus_main_window(app);
+        self.spawn_install_stall_timer(app.clone());
         Ok(())
     }
 
+    fn spawn_install_stall_timer(self: &Arc<Self>, app: AppHandle) {
+        let gen = *self.stall_generation.lock();
+        let svc = self.clone();
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(INSTALL_STALL_TIMEOUT).await;
+            if *svc.stall_generation.lock() != gen {
+                return;
+            }
+            let still_waiting = {
+                let guard = svc.state.lock();
+                matches!(
+                    guard.phase,
+                    UpdatePhase::ReadyToInstall | UpdatePhase::InstallStalled
+                )
+            };
+            if !still_waiting {
+                return;
+            }
+            let (version, installer_path) = {
+                let guard = svc.state.lock();
+                (
+                    guard
+                        .available_version
+                        .clone()
+                        .unwrap_or_else(|| "?".into()),
+                    guard.installer_path.clone(),
+                )
+            };
+            warn!(
+                local = CONNECTOR_VERSION,
+                remote = %version,
+                "updater: still on old binary after install stall timeout"
+            );
+            svc.set_phase(
+                &app,
+                UpdatePhase::InstallStalled,
+                stall_message(&version),
+                Some(version),
+                100,
+                true,
+                installer_path,
+                true,
+            );
+            focus_main_window(&app);
+        });
+    }
+
+    fn bump_stall_generation(&self) {
+        *self.stall_generation.lock() += 1;
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn set_phase(
         &self,
         app: &AppHandle,
@@ -203,6 +307,8 @@ impl UpdaterService {
         available_version: Option<String>,
         progress: u8,
         active: bool,
+        installer_path: Option<String>,
+        timed_out: bool,
     ) {
         {
             let mut guard = self.state.lock();
@@ -212,6 +318,10 @@ impl UpdaterService {
             guard.progress = progress;
             guard.active = active;
             guard.error = None;
+            if installer_path.is_some() {
+                guard.installer_path = installer_path;
+            }
+            guard.timed_out = timed_out;
         }
         emit(app, self.snapshot());
     }
@@ -223,24 +333,29 @@ impl UpdaterService {
             guard.message = message.into();
             guard.active = true;
             guard.phase = UpdatePhase::Downloading;
+            guard.timed_out = false;
         }
         emit(app, self.snapshot());
     }
 
     fn set_error(&self, app: &AppHandle, err: String) {
+        self.bump_stall_generation();
         {
             let mut guard = self.state.lock();
             guard.active = false;
             guard.phase = UpdatePhase::Error;
             guard.error = Some(err.clone());
-            guard.message = "Couldn’t update automatically. Try again later or reinstall from MLT.".into();
+            guard.message =
+                "Couldn’t update automatically. Try again or download from MLT.".into();
             guard.progress = 0;
+            guard.timed_out = false;
         }
         emit(app, self.snapshot());
         let _ = err;
     }
 
     fn clear_to_idle(&self, app: &AppHandle, message: Option<&str>) {
+        self.bump_stall_generation();
         {
             let mut guard = self.state.lock();
             guard.active = false;
@@ -249,6 +364,8 @@ impl UpdaterService {
             guard.available_version = None;
             guard.progress = 0;
             guard.error = None;
+            guard.installer_path = None;
+            guard.timed_out = false;
         }
         emit(app, self.snapshot());
     }
@@ -379,23 +496,84 @@ fn open_installer(path: &Path) -> Result<(), String> {
     }
 }
 
-fn finish_message(version: &str) -> String {
+fn installed_app_path() -> PathBuf {
     #[cfg(target_os = "macos")]
     {
-        format!(
-            "Update {version} downloaded. Drag MLT Desktop Connector to Applications to finish, then reopen the app."
-        )
+        PathBuf::from("/Applications/MLT Desktop Connector.app")
     }
     #[cfg(target_os = "windows")]
     {
-        format!(
-            "Update {version} is installing. Follow the installer prompts, then reopen the app."
-        )
+        // Best-effort: relaunch via Start Menu shortcut / default install path is handled by open.
+        std::env::current_exe().unwrap_or_else(|_| PathBuf::from("MLT Desktop Connector.exe"))
     }
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
-        format!("Update {version} downloaded. Open the installer to finish.")
+        std::env::current_exe().unwrap_or_else(|_| PathBuf::from("mlt-desktop-connector"))
     }
+}
+
+/// Quit this (old) process, then open the copy in Applications / installed location.
+fn schedule_relaunch_installed_app() -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let app_path = installed_app_path();
+        if !app_path.exists() {
+            return Err(
+                "Couldn’t find MLT Desktop Connector in Applications. Drag it from the installer window first."
+                    .into(),
+            );
+        }
+        // Delay so this process can exit before the new instance starts.
+        let script = format!(
+            "sleep 1; open '{}'",
+            app_path.to_string_lossy().replace('\'', "'\\''")
+        );
+        std::process::Command::new("sh")
+            .arg("-c")
+            .arg(script)
+            .spawn()
+            .map_err(|e| format!("Could not schedule relaunch: {e}"))?;
+        Ok(())
+    }
+    #[cfg(target_os = "windows")]
+    {
+        // Restart via the same EXE path after a short delay (installer usually replaces files).
+        let exe = std::env::current_exe().map_err(|e| format!("exe path: {e}"))?;
+        let script = format!(
+            "Start-Sleep -Seconds 2; Start-Process -FilePath '{}'",
+            exe.to_string_lossy().replace('\'', "''")
+        );
+        std::process::Command::new("powershell")
+            .args(["-NoProfile", "-WindowStyle", "Hidden", "-Command", &script])
+            .spawn()
+            .map_err(|e| format!("Could not schedule relaunch: {e}"))?;
+        Ok(())
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        Err("Relaunch is not supported on this platform".into())
+    }
+}
+
+fn finish_message(_version: &str) -> String {
+    #[cfg(target_os = "macos")]
+    {
+        "Installer open — drag to Applications, then reopen from Applications.".into()
+    }
+    #[cfg(target_os = "windows")]
+    {
+        "Installer open — finish the setup prompts, then click I’ve finished installing.".into()
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        "Installer open — finish installing, then reopen the app.".into()
+    }
+}
+
+fn stall_message(version: &str) -> String {
+    format!(
+        "Still on the old version. Finish installing {version}, or open the installer again."
+    )
 }
 
 fn focus_main_window(app: &AppHandle) {
@@ -550,5 +728,12 @@ mod tests {
     #[test]
     fn normalize_strips_v() {
         assert_eq!(normalize_version("v1.0.6"), "1.0.6");
+    }
+
+    #[test]
+    fn finish_message_is_one_line() {
+        let msg = finish_message("1.0.9");
+        assert!(!msg.is_empty());
+        assert!(!msg.to_ascii_lowercase().contains("updating"));
     }
 }

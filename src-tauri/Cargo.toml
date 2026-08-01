@@ -1,6 +1,6 @@
 [package]
 name = "mlt-desktop-connector"
-version = "1.0.8"
+version = "1.0.9"
 description = "MLT Desktop Connector"
 authors = ["7Socialapps"]
 edition = "2021"

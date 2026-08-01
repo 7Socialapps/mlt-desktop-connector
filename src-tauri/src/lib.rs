@@ -288,6 +288,20 @@ fn check_for_updates(app: tauri::AppHandle, services: tauri::State<'_, AppServic
 }
 
 #[tauri::command]
+fn reopen_update_installer(services: tauri::State<'_, AppServices>) -> Result<(), String> {
+    services.updater.reopen_installer()
+}
+
+/// After drag-to-Applications: launch installed app and quit this (old) process.
+#[tauri::command]
+fn finish_update_install(
+    app: tauri::AppHandle,
+    services: tauri::State<'_, AppServices>,
+) -> Result<(), String> {
+    services.updater.finish_and_relaunch(&app)
+}
+
+#[tauri::command]
 async fn reconnect_device(services: tauri::State<'_, AppServices>) -> Result<state::StatusSnapshot, String> {
     let refreshed = ReconnectService::try_refresh_tokens(services.api_client.as_ref()).await;
     services.heartbeat.trigger_now();
@@ -614,7 +628,9 @@ pub fn run() {
             get_deep_link_state,
             get_chromium_provision_state,
             get_update_state,
-            check_for_updates
+            check_for_updates,
+            reopen_update_installer,
+            finish_update_install
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

@@ -11,9 +11,12 @@
    - macOS: `*aarch64.dmg` / `*arm64.dmg` or `*x64.dmg` / `*x86_64.dmg`
    - Windows: `*setup.exe` (preferred) or `*.msi`
 4. Opens the installer locally:
-   - **macOS:** mounts/opens the DMG and shows: *Drag to Applications to finish update*
+   - **macOS:** mounts/opens the DMG
    - **Windows:** launches the setup EXE/MSI
-5. UI shows a single **Updating…** line (Connected/Not connected shell unchanged otherwise).
+5. UI switches from **Updating…** to **Installer open** with one clear line and:
+   - **I’ve finished installing** — relaunches from `/Applications` (Mac) and exits the old process
+   - **Open installer again** — reopens the downloaded DMG/EXE
+   - After **2 minutes** still on the old binary → **Install stalled** with Retry / Open installer again (never leave Updating disabled forever).
 
 Debug (`tauri dev`) builds skip automatic checks. Manual trigger still works via deep link.
 
