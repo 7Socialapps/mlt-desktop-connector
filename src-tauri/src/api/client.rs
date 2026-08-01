@@ -369,6 +369,36 @@ impl ConnectorApiClient {
         )
         .await
     }
+
+    pub async fn redeem_launch_session(
+        &self,
+        request: RedeemLaunchSessionRequest,
+        device_access_token: &str,
+    ) -> Result<RedeemLaunchSessionResponse, ApiClientError> {
+        self.post(
+            &request,
+            &AuthHeaders {
+                device_access_token: Some(device_access_token.to_string()),
+                ..AuthHeaders::default()
+            },
+        )
+        .await
+    }
+
+    pub async fn acknowledge_launch_session(
+        &self,
+        request: AcknowledgeLaunchSessionRequest,
+        device_access_token: &str,
+    ) -> Result<AcknowledgeLaunchSessionResponse, ApiClientError> {
+        self.post(
+            &request,
+            &AuthHeaders {
+                device_access_token: Some(device_access_token.to_string()),
+                ..AuthHeaders::default()
+            },
+        )
+        .await
+    }
 }
 
 impl Default for AuthHeaders {
@@ -402,6 +432,9 @@ mod tests {
         r#"{"ok":true,"jobId":"job-123","status":"browser_opening","progress":10}"#;
 
     const COMPLETE_TEST_JOB: &str = r#"{"ok":true,"jobId":"job-123","status":"posted","listingUrl":"https://www.facebook.com/marketplace/item/9999999999","test":true}"#;
+
+    const REDEEM_SUCCESS: &str =
+        r#"{"ok":true,"nonce":"nonce-abc","expiresAt":"2026-07-27T17:05:00.000Z"}"#;
 
     const CLAIM_CONFLICT: &str =
         r#"{"error":"Job already claimed","errorCode":"CLAIM_CONFLICT","status":"job_claimed"}"#;
@@ -510,5 +543,13 @@ mod tests {
         assert_eq!(parsed["ok"], true);
         assert_eq!(parsed["status"], "posted");
         assert_eq!(parsed["test"], true);
+    }
+
+    #[test]
+    fn redeem_launch_session_success_matches_contract_shape() {
+        let parsed: RedeemLaunchSessionResponse =
+            parse_success_body(REDEEM_SUCCESS).expect("redeem should parse");
+        assert!(parsed.ok);
+        assert_eq!(parsed.nonce.as_deref(), Some("nonce-abc"));
     }
 }

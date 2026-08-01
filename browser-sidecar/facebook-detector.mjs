@@ -1,6 +1,6 @@
 /**
- * Facebook session detector — multi-signal, no credential logging (M2.5).
- * @typedef {"facebook_not_checked"|"facebook_logged_out"|"facebook_login_in_progress"|"facebook_logged_in"|"facebook_checkpoint"|"facebook_mfa_required"|"facebook_session_expired"|"facebook_error"} FacebookState
+ * Facebook session detector — multi-signal, no credential logging (M2.5+).
+ * @typedef {"facebook_not_checked"|"facebook_logged_out"|"facebook_login_in_progress"|"facebook_logged_in"|"facebook_checkpoint"|"facebook_mfa_required"|"facebook_session_expired"|"facebook_temporary_restriction"|"facebook_disabled_account"|"facebook_error"} FacebookState
  */
 
 const FACEBOOK_HOSTS = new Set(["www.facebook.com", "facebook.com", "m.facebook.com"]);
@@ -36,7 +36,7 @@ export function isMarketplaceUrl(url) {
 
 /**
  * Detect Facebook session state from page signals.
- * @param {{ url: string, title: string, hasLoginForm: boolean, hasCheckpointText: boolean, hasMfaText: boolean, hasNavBar: boolean, hasLogoutSignal: boolean }} signals
+ * @param {{ url: string, title: string, hasLoginForm: boolean, hasCheckpointText: boolean, hasMfaText: boolean, hasNavBar: boolean, hasLogoutSignal: boolean, hasTemporaryRestrictionText?: boolean, hasDisabledAccountText?: boolean, displayName?: string | null }} signals
  * @returns {{ state: FacebookState, reason_code: string, marketplace_accessible: boolean }}
  */
 export function detectFacebookSession(signals) {
@@ -70,6 +70,32 @@ export function detectFacebookSession(signals) {
     return {
       state: "facebook_checkpoint",
       reason_code: "checkpoint_url",
+      marketplace_accessible: false,
+    };
+  }
+
+  if (
+    lowerUrl.includes("/disabled") ||
+    lowerTitle.includes("account disabled") ||
+    lowerTitle.includes("account has been disabled") ||
+    signals.hasDisabledAccountText
+  ) {
+    return {
+      state: "facebook_disabled_account",
+      reason_code: "account_disabled",
+      marketplace_accessible: false,
+    };
+  }
+
+  if (
+    lowerUrl.includes("/restricted") ||
+    lowerTitle.includes("temporarily blocked") ||
+    lowerTitle.includes("temporary restriction") ||
+    signals.hasTemporaryRestrictionText
+  ) {
+    return {
+      state: "facebook_temporary_restriction",
+      reason_code: "temporary_restriction",
       marketplace_accessible: false,
     };
   }
@@ -159,6 +185,9 @@ export async function collectFacebookSignals(page) {
       hasMfaText: false,
       hasNavBar: false,
       hasLogoutSignal: false,
+      hasTemporaryRestrictionText: false,
+      hasDisabledAccountText: false,
+      displayName: null,
     };
   }
 
@@ -168,6 +197,9 @@ export async function collectFacebookSignals(page) {
     hasMfaText: false,
     hasNavBar: false,
     hasLogoutSignal: false,
+    hasTemporaryRestrictionText: false,
+    hasDisabledAccountText: false,
+    displayName: null,
   };
 
   try {
@@ -182,6 +214,11 @@ export async function collectFacebookSignals(page) {
       const hasLogoutSignal = Boolean(
         document.querySelector('[aria-label="Account"], [aria-label="Your profile"]'),
       );
+      const profileLink = document.querySelector('[aria-label="Your profile"], [aria-label="Account"]');
+      const displayName =
+        profileLink?.getAttribute("aria-label")?.replace(/^Your profile,?\s*/i, "").trim() ||
+        profileLink?.textContent?.trim() ||
+        null;
       return {
         hasLoginForm,
         hasCheckpointText:
@@ -193,6 +230,13 @@ export async function collectFacebookSignals(page) {
           bodyText.includes("login code"),
         hasNavBar,
         hasLogoutSignal,
+        hasTemporaryRestrictionText:
+          bodyText.includes("temporarily blocked") ||
+          bodyText.includes("temporary restriction"),
+        hasDisabledAccountText:
+          bodyText.includes("account disabled") ||
+          bodyText.includes("account has been disabled"),
+        displayName: displayName || null,
       };
     });
   } catch {
@@ -213,5 +257,6 @@ export async function detectFromPage(page) {
     ...result,
     checked_at: new Date().toISOString(),
     current_url: signals.url,
+    display_name: signals.displayName ?? null,
   };
 }

@@ -104,6 +104,41 @@ footer p {
   border-top: 1px solid #2a3544;
 }
 
+.welcome-section {
+  margin-bottom: 1rem;
+  padding: 0.85rem 1rem;
+  border-radius: 8px;
+  background: #151c27;
+  border: 1px solid #2a3544;
+}
+
+.welcome-title {
+  margin: 0.35rem 0;
+  font-weight: 600;
+}
+
+.dashboard-request {
+  margin-top: 0.75rem;
+  padding: 0.5rem 0.65rem;
+  border-radius: 6px;
+  background: #1a2433;
+  border-left: 3px solid #5b9dff;
+}
+
+.progress-bar {
+  margin-top: 0.75rem;
+  height: 8px;
+  border-radius: 999px;
+  background: #243041;
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #5b9dff, #7dffb2);
+  transition: width 0.3s ease;
+}
+
 .pairing-section h2 {
   font-size: 0.95rem;
   margin: 0 0 0.5rem;

@@ -38,6 +38,8 @@ pub enum FacebookSessionState {
     FacebookCheckpoint,
     FacebookMfaRequired,
     FacebookSessionExpired,
+    FacebookTemporaryRestriction,
+    FacebookDisabledAccount,
     FacebookError,
     /// Legacy values retained for backward-compatible deserialization.
     #[serde(alias = "unknown")]
@@ -60,6 +62,8 @@ impl FacebookSessionState {
             Self::FacebookCheckpoint => "facebook_checkpoint",
             Self::FacebookMfaRequired => "facebook_mfa_required",
             Self::FacebookSessionExpired | Self::Expired => "facebook_session_expired",
+            Self::FacebookTemporaryRestriction => "facebook_temporary_restriction",
+            Self::FacebookDisabledAccount => "facebook_disabled_account",
             Self::FacebookError => "facebook_error",
         }
     }
@@ -146,6 +150,92 @@ pub struct HeartbeatRequest {
     pub last_browser_check_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_browser_error_code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current_facebook_account: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_state: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub marketplace_ready: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub messenger_ready: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notifications_ready: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub browser_pid: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub profile_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current_service: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_health_check: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_restart: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub browser_state: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub facebook_account_label: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub marketplace_state: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub messenger_state: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notifications_state: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current_destination: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_navigation_error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_health_check_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_restart_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub launch_session_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub launch_status: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RedeemLaunchSessionRequest {
+    pub action: String,
+    pub session_id: String,
+    pub device_id: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RedeemLaunchSessionResponse {
+    pub ok: bool,
+    pub nonce: Option<String>,
+    pub expires_at: Option<String>,
+    #[serde(default)]
+    pub intent: Option<String>,
+    #[serde(default)]
+    pub user_id: Option<String>,
+    #[serde(default)]
+    pub dealership_id: Option<String>,
+    pub error: Option<String>,
+    pub error_code: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcknowledgeLaunchSessionRequest {
+    pub action: String,
+    pub session_id: String,
+    pub device_id: String,
+    /// `launching` | `ready` | `error`
+    pub state: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcknowledgeLaunchSessionResponse {
+    pub ok: bool,
+    pub error: Option<String>,
+    pub error_code: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

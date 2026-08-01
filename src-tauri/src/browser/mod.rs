@@ -6,14 +6,20 @@ mod runtime;
 mod sidecar;
 mod types;
 
-pub use facebook::{url_category, FacebookSessionSnapshot, FacebookSessionState};
+pub use facebook::{
+    is_blank_page_url, parse_facebook_state, url_category, FacebookSessionSnapshot,
+    FacebookSessionState, SidecarFacebookDetection,
+};
 pub use manager::BrowserManager;
-pub use marketplace::{MarketplaceSnapshot, MarketplaceStatus};
+pub use marketplace::{
+    parse_marketplace_status, MarketplaceSnapshot, MarketplaceStatus, SidecarMarketplaceResult,
+};
 pub use profile::{ProfileSnapshot, ProfileStatus};
 pub use runtime::BrowserRuntimeService;
+pub use sidecar::{resolve_sidecar_cli, resolve_sidecar_server, run_sidecar_command, set_resource_root, SidecarDaemon};
 pub use types::{
-    BrowserActivePage, BrowserManagerSnapshot, BrowserRuntimeSnapshot,
-    BrowserRuntimeStatus,
+    BrowserActivePage, BrowserManagerSnapshot, BrowserRuntimeSnapshot, BrowserRuntimeStatus,
+    SidecarDaemonLine, SidecarSimpleResponse,
 };
 
 use std::sync::{Arc, OnceLock};
@@ -53,5 +59,3 @@ pub fn is_browser_enabled() -> bool {
         .map(|v| matches!(v.to_lowercase().as_str(), "1" | "true" | "yes"))
         .unwrap_or(true)
 }
-
-use sidecar::SidecarDaemon;

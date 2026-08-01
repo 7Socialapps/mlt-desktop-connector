@@ -109,7 +109,8 @@ async function launchTest() {
     headless: false,
     args: ["--disable-dev-shm-usage"],
   });
-  const pid = browser.process()?.pid ?? null;
+  const pid =
+    typeof browser.process === "function" ? (browser.process()?.pid ?? null) : null;
   if (pid) {
     writeTestState({ pid, launched_at: new Date().toISOString() });
   }
@@ -133,6 +134,43 @@ async function closeTest() {
   return { ok: true, closed: true, pid: state.pid };
 }
 
+async function installChromium() {
+  const { spawn } = await import("node:child_process");
+  const playwrightCli = require.resolve("playwright/cli.js");
+
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, [playwrightCli, "install", "chromium"], {
+      stdio: ["ignore", "pipe", "pipe"],
+      env: process.env,
+    });
+
+    let stderr = "";
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString();
+    });
+
+    child.on("close", (code) => {
+      if (code === 0) {
+        emit({ ok: true, installed: true });
+        return;
+      }
+      emit({
+        ok: false,
+        error_code: "CHROMIUM_INSTALL_FAILED",
+        error: stderr.trim() || `playwright install exited with code ${code}`,
+      });
+    });
+
+    child.on("error", (err) => {
+      emit({
+        ok: false,
+        error_code: "CHROMIUM_INSTALL_FAILED",
+        error: err instanceof Error ? err.message : String(err),
+      });
+    });
+  });
+}
+
 async function main() {
   const command = process.argv[2] ?? "detect";
 
@@ -140,6 +178,9 @@ async function main() {
     switch (command) {
       case "detect":
         emit(await detectRuntime());
+        break;
+      case "install-chromium":
+        await installChromium();
         break;
       case "launch-test":
         emit(await launchTest());

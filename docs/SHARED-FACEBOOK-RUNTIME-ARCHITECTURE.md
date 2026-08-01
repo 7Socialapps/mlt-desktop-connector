@@ -7,38 +7,48 @@ The MLT Desktop Connector is the **single local Facebook runtime** for all MLT p
 1. **One Chromium runtime** — Playwright sidecar + `BrowserManager` lifecycle.
 2. **One persistent profile** — `{app_data}/browser-profile/` holds Facebook cookies and session state.
 3. **One paired device identity** — encrypted credentials in `{app_data}/credentials.enc`.
-4. **One heartbeat/status channel** — connector + browser + Facebook + Marketplace fields to the dashboard.
-5. **Separate product services** — Marketplace and Messenger automation are distinct services that **reuse** the shared runtime; they do not launch their own browsers or profiles.
+4. **One heartbeat/status channel** — connector + browser + Facebook + Marketplace + runtime service fields to the dashboard.
+5. **Separate product services** — Marketplace, Messenger, and Notifications automation are distinct services that **reuse** the shared runtime via `ServiceBus`; they do not launch their own browsers or profiles.
 
-## Service boundaries (target)
+## Service boundaries
 
 | Service | Responsibility | Shares |
 |---|---|---|
-| **BrowserManager** | Chromium launch/stop, profile lock, sidecar daemon, health | Profile path, sidecar process |
-| **FacebookSessionService** | Login state detection, session expiry, checkpoint handling | BrowserManager page access |
-| **MarketplaceService** | Marketplace navigation, listing form automation, image upload | BrowserManager + FacebookSessionService |
-| **MessengerService** | Messenger thread access, lead retrieval (future) | BrowserManager + FacebookSessionService |
-| **NotificationService** | Desktop/system notifications for jobs and attention states | App state only |
-| **DiagnosticsService** | Screenshots, structured error codes, evidence capture | BrowserManager (on demand) |
+| **BrowserManager** | Chromium launch/stop, profile lock, sidecar daemon, health, thin Tauri command wrappers | Profile path, sidecar process |
+| **ServiceBus** | Single-browser mutex, routes RPC to BrowserManager, tracks `current_service` | BrowserManager |
+| **FacebookSessionService** | Login state detection, session expiry, checkpoint/MFA/restriction/disabled, account identity (display name framework) | ServiceBus → BrowserManager |
+| **NavigationService** | Deterministic navigation (`navigate` RPC), retry/timeout, page readiness | ServiceBus → BrowserManager |
+| **MarketplaceService** | Marketplace status + navigation to create listing (no form filling in M4) | Session + Navigation via ServiceBus |
+| **MessengerService** | Messenger navigation + readiness framework (no scraping in M4) | Navigation via ServiceBus |
+| **NotificationService** | Notifications navigation + readiness framework (unread count stub) | Navigation via ServiceBus |
+| **RecoveryService** | Crash, redirect, checkpoint, logout, network, restart policies | BrowserManager crash recovery (wrap, not duplicate) |
+| **FacebookRuntime** | Aggregates all services; `FacebookRuntimeStatus` for heartbeat | All services above |
 
-## Current implementation (M3.2)
+## Current implementation (M4)
 
-Implemented today under `src-tauri/src/browser/`:
+Implemented under `src-tauri/src/runtime/`:
 
-- `BrowserManager` — sidecar RPC, profile, launch/stop
-- Facebook session detection — `facebook.rs` + sidecar `facebook-detector.mjs`
-- Marketplace status — `marketplace.rs` + sidecar `marketplace-evaluator.mjs`
+- `ServiceBus` — internal dispatcher with mutex; services never call BrowserManager directly from outside runtime
+- `FacebookSessionService` — sole owner of Facebook session state parsing
+- `NavigationService` — destinations enum + sidecar `navigate` RPC
+- `MarketplaceService` — `open_marketplace`, `open_create_listing`, delegates from BrowserManager
+- `MessengerService` / `NotificationService` — framework only (navigation + state evaluation)
+- `FacebookRuntimeStatus` — aggregated heartbeat fields (M4)
+- Sidecar: `navigation.mjs`, `messenger-evaluator.mjs`, `notifications-evaluator.mjs`, RPCs `navigate`, `open_messenger`, `open_notifications`
 
-Marketplace job automation (`src-tauri/src/marketplace/`) builds on the same profile and sidecar. **No MessengerService exists yet** — Leads must not introduce a second browser or profile when added.
+Marketplace job asset pipeline remains in `src-tauri/src/marketplace/assets/` (M3). Form filling/posting is **not** started in M4.
 
-## Non-goals
+## Non-goals (M4)
 
+- Messenger scraping, AI replies, conversation parsing
+- Marketplace form filling or posting (M3.3+)
+- Product-specific browser profiles
 - Do not derive location or identity from browser geolocation, IP, or device GPS.
 - Do not store Facebook cookies or refresh tokens in the repository.
-- Do not create product-specific browser profiles (Web Poster profile vs Leads profile).
 
 ## Milestone alignment
 
 - **M2** — Browser foundation, shared profile, heartbeat contract.
-- **M3** — Marketplace automation services on top of BrowserManager.
-- **Future Leads** — MessengerService on the same BrowserManager + FacebookSessionService; separate job queue and edge-function contracts, shared connector heartbeat.
+- **M3** — Marketplace payload/assets on top of BrowserManager.
+- **M4** — Shared Facebook runtime services (this document).
+- **Future Leads** — MessengerService scraping on same runtime; separate job queue, shared heartbeat.

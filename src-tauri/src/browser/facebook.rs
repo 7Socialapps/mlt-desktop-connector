@@ -11,6 +11,8 @@ pub enum FacebookSessionState {
     FacebookCheckpoint,
     FacebookMfaRequired,
     FacebookSessionExpired,
+    FacebookTemporaryRestriction,
+    FacebookDisabledAccount,
     FacebookError,
 }
 
@@ -24,6 +26,8 @@ impl FacebookSessionState {
             Self::FacebookCheckpoint => "Facebook security checkpoint",
             Self::FacebookMfaRequired => "Facebook MFA required",
             Self::FacebookSessionExpired => "Facebook session expired",
+            Self::FacebookTemporaryRestriction => "Facebook temporary restriction",
+            Self::FacebookDisabledAccount => "Facebook account disabled",
             Self::FacebookError => "Facebook session error",
         }
     }
@@ -38,6 +42,12 @@ impl FacebookSessionState {
             ),
             Self::FacebookMfaRequired => {
                 Some("Complete two-factor authentication manually in the browser window.")
+            }
+            Self::FacebookTemporaryRestriction => Some(
+                "Facebook has temporarily restricted this account — resolve in the browser window.",
+            ),
+            Self::FacebookDisabledAccount => {
+                Some("This Facebook account is disabled — resolve with Facebook support.")
             }
             Self::FacebookLoginInProgress => {
                 Some("Finish signing in manually — do not close the browser.")
@@ -78,17 +88,26 @@ pub struct SidecarFacebookDetection {
     pub current_url: String,
     pub marketplace_accessible: bool,
     pub reason_code: String,
+    #[serde(default)]
+    pub display_name: Option<String>,
 }
 
 pub fn parse_facebook_state(raw: &str) -> FacebookSessionState {
     match raw {
-        "facebook_logged_out" => FacebookSessionState::FacebookLoggedOut,
+        "logged_in" | "facebook_logged_in" => FacebookSessionState::FacebookLoggedIn,
+        "logged_out" | "facebook_logged_out" => FacebookSessionState::FacebookLoggedOut,
         "facebook_login_in_progress" => FacebookSessionState::FacebookLoginInProgress,
-        "facebook_logged_in" => FacebookSessionState::FacebookLoggedIn,
-        "facebook_checkpoint" => FacebookSessionState::FacebookCheckpoint,
-        "facebook_mfa_required" => FacebookSessionState::FacebookMfaRequired,
-        "facebook_session_expired" => FacebookSessionState::FacebookSessionExpired,
-        "facebook_error" => FacebookSessionState::FacebookError,
+        "checkpoint" | "facebook_checkpoint" => FacebookSessionState::FacebookCheckpoint,
+        "mfa_required" | "facebook_mfa_required" => FacebookSessionState::FacebookMfaRequired,
+        "session_expired" | "facebook_session_expired" => FacebookSessionState::FacebookSessionExpired,
+        "account_restricted" | "facebook_temporary_restriction" => {
+            FacebookSessionState::FacebookTemporaryRestriction
+        }
+        "account_disabled" | "facebook_disabled_account" => {
+            FacebookSessionState::FacebookDisabledAccount
+        }
+        "unknown" | "facebook_error" => FacebookSessionState::FacebookError,
+        "facebook_not_checked" => FacebookSessionState::FacebookNotChecked,
         _ => FacebookSessionState::FacebookNotChecked,
     }
 }
@@ -99,6 +118,11 @@ pub fn apply_detection(snapshot: &mut FacebookSessionSnapshot, raw: &SidecarFace
     snapshot.current_url = Some(raw.current_url.clone());
     snapshot.marketplace_accessible = raw.marketplace_accessible;
     snapshot.reason_code = Some(raw.reason_code.clone());
+}
+
+/// True when the browser has not loaded a real destination yet.
+pub fn is_blank_page_url(url: Option<&str>) -> bool {
+    matches!(url_category(url), "blank" | "unknown")
 }
 
 /// Category for heartbeat — never sends full URL.
@@ -133,6 +157,7 @@ mod tests {
             current_url: url.into(),
             marketplace_accessible: marketplace,
             reason_code: reason.into(),
+            display_name: None,
         }
     }
 
@@ -167,6 +192,13 @@ mod tests {
         assert_eq!(snap.state, FacebookSessionState::FacebookLoggedIn);
         assert!(snap.marketplace_accessible);
         assert_eq!(snap.reason_code.as_deref(), Some("nav_present"));
+    }
+
+    #[test]
+    fn blank_page_url_is_detected() {
+        assert!(is_blank_page_url(Some("about:blank")));
+        assert!(is_blank_page_url(None));
+        assert!(!is_blank_page_url(Some("https://www.facebook.com/")));
     }
 
     #[test]

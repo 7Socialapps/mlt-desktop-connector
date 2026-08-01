@@ -10,6 +10,22 @@ import fs from "node:fs";
 import path from "node:path";
 import { detectFromPage } from "./facebook-detector.mjs";
 import { evaluateMarketplaceFromDetection } from "./marketplace-evaluator.mjs";
+import { evaluateMessengerFromDetection } from "./messenger-evaluator.mjs";
+import { evaluateNotificationsFromDetection } from "./notifications-evaluator.mjs";
+import {
+  destinationUrl,
+  navigateWithRetry,
+  waitForPageReady,
+} from "./navigation.mjs";
+import { verifyVehicleCreateFromPage } from "./vehicle-create-verifier.mjs";
+import { fillVehicleFormFromPage } from "./marketplace/form-fill.mjs";
+import { uploadVehicleImagesFromPage, retrySingleImageUpload } from "./marketplace/image-upload.mjs";
+import { verifyFilledFormFromPage } from "./marketplace/form-verify.mjs";
+import {
+  isBrowserContextConnected,
+  profileStateWhileBrowserRunning,
+  resolveBrowserProcessPid,
+} from "./browser-process.mjs";
 
 /** @typedef {"stopped"|"starting"|"ready"|"crashed"} BrowserState */
 /** @typedef {"profile_missing"|"profile_initializing"|"profile_ready"|"profile_locked"|"profile_corrupt"|"profile_reset_required"} ProfileState */
@@ -131,29 +147,27 @@ function inspectProfileOnDisk() {
 }
 
 function currentStatus() {
-  const alive = browserPid ? isProcessAlive(browserPid) : false;
-  if (context) {
-    try {
-      const browser = context.browser();
-      if (browser && !browser.isConnected()) {
-        browserState = "crashed";
-      }
-    } catch {
-      browserState = "crashed";
-    }
-  }
-  if (browserState === "ready" && browserPid && !alive) {
+  const connected = isBrowserContextConnected(context, browserState);
+  const alive = browserPid ? isProcessAlive(browserPid) : connected;
+
+  if (context && browserState === "ready" && !connected) {
     browserState = "crashed";
   }
-  if (browserState === "ready" && profileState !== "profile_initializing") {
-    profileState = "profile_ready";
+  if (browserState === "ready" && browserPid && !isProcessAlive(browserPid) && !connected) {
+    browserState = "crashed";
+  }
+
+  const runningProfile = profileStateWhileBrowserRunning(browserState, context);
+  if (runningProfile) {
+    profileState = runningProfile;
   } else if (browserState === "stopped") {
     profileState = inspectProfileOnDisk();
   }
+
   return {
     browser_state: browserState,
     pid: browserPid,
-    browser_connected: Boolean(context?.browser()?.isConnected()),
+    browser_connected: connected,
     process_alive: alive,
     profile_status: profileState,
     profile_path: profileDir() || null,
@@ -184,30 +198,33 @@ async function teardownBrowser(reason = "stop") {
 }
 
 function attachDisconnectHandler() {
-  const browser = context?.browser();
-  if (!browser) {
-    return;
-  }
-  browser.on("disconnected", () => {
-    if (browserState === "ready" || browserState === "starting") {
-      browserState = "crashed";
-      emitEvent("browser_disconnected", {
-        pid: browserPid,
-        reason: "disconnected",
-      });
+  try {
+    const browser = context?.browser();
+    if (!browser || typeof browser.on !== "function") {
+      return;
     }
-    context = null;
-    page = null;
-    browserPid = null;
-    removeLockFile();
-  });
+    browser.on("disconnected", () => {
+      if (browserState === "ready" || browserState === "starting") {
+        browserState = "crashed";
+        emitEvent("browser_disconnected", {
+          pid: browserPid,
+          reason: "disconnected",
+        });
+      }
+      context = null;
+      page = null;
+      browserPid = null;
+      removeLockFile();
+    });
+  } catch {
+    /* persistent context may not expose browser() — rely on explicit stop/crash detection */
+  }
 }
 
 async function handleLaunch(id) {
   if (context) {
     try {
-      const browser = context.browser();
-      if (browser?.isConnected()) {
+      if (isBrowserContextConnected(context, "ready")) {
         ok(id, {
           ...currentStatus(),
           already_running: true,
@@ -258,19 +275,21 @@ async function handleLaunch(id) {
       args: ["--disable-dev-shm-usage"],
     });
     attachDisconnectHandler();
-    browserPid = context.browser()?.process()?.pid ?? null;
+    browserPid = resolveBrowserProcessPid(context);
     if (browserPid) {
       writeLockFile(browserPid);
     }
     const pages = context.pages();
     page = pages.length > 0 ? pages[0] : await context.newPage();
-    if (page.url() === "about:blank") {
-      await page.goto("about:blank");
-    }
     browserState = "ready";
     profileState = "profile_ready";
     emitEvent("browser_ready", { pid: browserPid });
-    ok(id, { ...currentStatus(), launched: true });
+    ok(id, {
+      ...currentStatus(),
+      launched: true,
+      current_url: page.url(),
+      page_title: await page.title().catch(() => ""),
+    });
   } catch (err) {
     browserState = "stopped";
     browserPid = null;
@@ -404,37 +423,99 @@ async function captureDiagnosticScreenshot(label) {
   }
 }
 
-/**
- * @param {string} targetUrl
- * @returns {Promise<object>}
- */
-async function navigateWithRetry(targetUrl, maxAttempts = 2) {
-  let lastError = null;
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    try {
-      await page.goto(targetUrl, {
-        waitUntil: "domcontentloaded",
-        timeout: 45_000,
-      });
-      await page.waitForTimeout(2000);
-      return { ok: true, attempt };
-    } catch (err) {
-      lastError = err;
-      if (attempt < maxAttempts) {
-        await page.waitForTimeout(1000 * attempt);
-      }
-    }
-  }
-  throw lastError;
-}
-
-/**
- * @returns {Promise<object>}
- */
 async function evaluateMarketplaceState() {
   const fb = await detectFromPage(page);
   const url = page.url();
   return evaluateMarketplaceFromDetection(fb, url);
+}
+
+async function handleNavigate(id, params = {}) {
+  if (!page || browserState !== "ready") {
+    fail(id, "NO_ACTIVE_PAGE", "Browser is not ready — launch the browser first");
+    return;
+  }
+
+  const destination = params?.destination;
+  const targetUrl = destinationUrl(destination);
+  if (!targetUrl) {
+    fail(id, "INVALID_DESTINATION", `Unknown navigation destination: ${destination}`);
+    return;
+  }
+
+  try {
+    const nav = await navigateWithRetry(page, targetUrl);
+    const readiness = await waitForPageReady(page);
+    const fb = await runFacebookDetection();
+    ok(id, {
+      navigated: true,
+      destination,
+      attempt: nav.attempt,
+      current_url: nav.current_url,
+      page_title: readiness.title,
+      redirect_detected: nav.redirect_detected,
+      facebook: fb ?? lastFacebookDetection,
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    fail(id, "NAVIGATION_FAILED", message, {
+      destination,
+      current_url: page.url(),
+    });
+  }
+}
+
+async function handleOpenMessenger(id) {
+  if (!page || browserState !== "ready") {
+    fail(id, "NO_ACTIVE_PAGE", "Browser is not ready — launch the browser first");
+    return;
+  }
+
+  try {
+    const targetUrl = destinationUrl("messenger");
+    await navigateWithRetry(page, targetUrl);
+    await waitForPageReady(page);
+    const fb = (await runFacebookDetection()) ?? lastFacebookDetection ?? {
+      state: "facebook_not_checked",
+      reason_code: "no_detection",
+    };
+    const url = page.url();
+    const evaluation = evaluateMessengerFromDetection(fb, url);
+    const checked_at = new Date().toISOString();
+    ok(id, {
+      messenger: { ...evaluation, checked_at },
+      navigated: true,
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    fail(id, "MESSENGER_NAV_FAILED", message);
+  }
+}
+
+async function handleOpenNotifications(id) {
+  if (!page || browserState !== "ready") {
+    fail(id, "NO_ACTIVE_PAGE", "Browser is not ready — launch the browser first");
+    return;
+  }
+
+  try {
+    const targetUrl = destinationUrl("notifications");
+    await navigateWithRetry(page, targetUrl);
+    await waitForPageReady(page);
+    const fb = (await runFacebookDetection()) ?? lastFacebookDetection ?? {
+      state: "facebook_not_checked",
+      reason_code: "no_detection",
+    };
+    const url = page.url();
+    const evaluation = evaluateNotificationsFromDetection(fb, url);
+    const checked_at = new Date().toISOString();
+    ok(id, {
+      notifications: { ...evaluation, checked_at },
+      navigated: true,
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    fail(id, "NOTIFICATIONS_NAV_FAILED", message);
+  }
 }
 
 async function handleOpenMarketplace(id, params = {}) {
@@ -444,16 +525,18 @@ async function handleOpenMarketplace(id, params = {}) {
   }
 
   const createVehicle = Boolean(params?.create_vehicle);
-  const targetUrl = createVehicle
-    ? "https://www.facebook.com/marketplace/create/vehicle"
-    : "https://www.facebook.com/marketplace/";
+  const skipNavigation = Boolean(params?.skip_navigation);
+  const destination = createVehicle ? "marketplace_create_vehicle" : "marketplace";
+  const targetUrl = destinationUrl(destination);
 
   emitEvent("marketplace_status_changed", {
     status: "marketplace_loading",
   });
 
   try {
-    await navigateWithRetry(targetUrl);
+    if (!skipNavigation) {
+      await navigateWithRetry(page, targetUrl);
+    }
     const evaluation = await evaluateMarketplaceState();
     const checked_at = new Date().toISOString();
     let screenshot_path = null;
@@ -511,6 +594,140 @@ async function handleDetectFacebookSession(id) {
     return;
   }
   ok(id, { facebook: detection });
+}
+
+async function handleFillVehicleForm(id, params = {}) {
+  if (!page || browserState !== "ready") {
+    fail(id, "NO_ACTIVE_PAGE", "Browser is not ready — launch the browser first");
+    return;
+  }
+
+  const payload = params?.payload ?? params?.fields ?? {};
+  try {
+    const result = await fillVehicleFormFromPage(page, payload);
+    ok(id, { form_fill: result });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    fail(id, "FORM_FILL_FAILED", message);
+  }
+}
+
+async function handleUploadVehicleImages(id, params = {}) {
+  if (!page || browserState !== "ready") {
+    fail(id, "NO_ACTIVE_PAGE", "Browser is not ready — launch the browser first");
+    return;
+  }
+
+  const images = Array.isArray(params?.images) ? params.images : [];
+  try {
+    let result = await uploadVehicleImagesFromPage(page, images);
+
+    const failed = result.uploaded.filter((u) => !u.ok);
+    for (const entry of failed) {
+      const img = images.find((i) => i.index === entry.index);
+      if (!img?.local_path) continue;
+      const retry = await retrySingleImageUpload(page, img.local_path);
+      entry.ok = retry.ok;
+      entry.reason = retry.ok ? undefined : "retry_failed";
+      entry.attempts = (entry.attempts ?? 1) + 1;
+    }
+
+    result = {
+      ...result,
+      uploaded: result.uploaded,
+      thumbnail_count: result.thumbnail_count,
+    };
+
+    ok(id, { image_upload: result });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    fail(id, "IMAGE_UPLOAD_FAILED", message);
+  }
+}
+
+async function handleVerifyFilledForm(id, params = {}) {
+  if (!page || browserState !== "ready") {
+    fail(id, "NO_ACTIVE_PAGE", "Browser is not ready — launch the browser first");
+    return;
+  }
+
+  const expectedValues = params?.expected_values ?? params?.payload ?? {};
+  const expectedImageCount = Number(params?.expected_image_count ?? 0);
+
+  try {
+    const report = await verifyFilledFormFromPage(page, expectedValues, expectedImageCount);
+    let screenshot_path = null;
+    if (!report.ready) {
+      screenshot_path = await captureDiagnosticScreenshot(report.reason_code ?? "verify_failed");
+    }
+    ok(id, {
+      form_verification: {
+        ...report,
+        screenshot_path,
+      },
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    const screenshot_path = await captureDiagnosticScreenshot("verify_filled_error");
+    fail(id, "FORM_VERIFY_FAILED", message, {
+      form_verification: {
+        ready: false,
+        reason_code: "verify_error",
+        screenshot_path,
+        current_url: page.url(),
+        checked_at: new Date().toISOString(),
+      },
+    });
+  }
+}
+
+async function handleBringBrowserForward(id) {
+  if (!page || browserState !== "ready") {
+    fail(id, "NO_ACTIVE_PAGE", "Browser is not ready");
+    return;
+  }
+  try {
+    await page.bringToFront();
+    ok(id, { brought_forward: true, current_url: page.url() });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    fail(id, "BRING_FORWARD_FAILED", message);
+  }
+}
+
+async function handleVerifyVehicleCreate(id) {
+  if (!page || browserState !== "ready") {
+    fail(id, "NO_ACTIVE_PAGE", "Browser is not ready — launch the browser first");
+    return;
+  }
+
+  try {
+    const verification = await verifyVehicleCreateFromPage(page);
+    let screenshot_path = null;
+    if (!verification.ready) {
+      screenshot_path = await captureDiagnosticScreenshot(
+        verification.reason_code ?? "verify_failed",
+      );
+    }
+    ok(id, {
+      vehicle_create: {
+        ...verification,
+        screenshot_path,
+      },
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    const screenshot_path = await captureDiagnosticScreenshot("verify_error");
+    fail(id, "VEHICLE_CREATE_VERIFY_FAILED", message, {
+      vehicle_create: {
+        ready: false,
+        reason_code: "verify_error",
+        screenshot_path,
+        current_url: page.url(),
+        checked_at: new Date().toISOString(),
+      },
+    });
+  }
 }
 
 async function handleGetActivePage(id) {
@@ -593,6 +810,30 @@ async function dispatch(line) {
         break;
       case "open_marketplace":
         await handleOpenMarketplace(id, params ?? {});
+        break;
+      case "verify_vehicle_create":
+        await handleVerifyVehicleCreate(id);
+        break;
+      case "fill_vehicle_form":
+        await handleFillVehicleForm(id, params ?? {});
+        break;
+      case "upload_vehicle_images":
+        await handleUploadVehicleImages(id, params ?? {});
+        break;
+      case "verify_filled_form":
+        await handleVerifyFilledForm(id, params ?? {});
+        break;
+      case "bring_browser_forward":
+        await handleBringBrowserForward(id);
+        break;
+      case "navigate":
+        await handleNavigate(id, params ?? {});
+        break;
+      case "open_messenger":
+        await handleOpenMessenger(id);
+        break;
+      case "open_notifications":
+        await handleOpenNotifications(id);
         break;
       case "get_active_page":
         await handleGetActivePage(id);

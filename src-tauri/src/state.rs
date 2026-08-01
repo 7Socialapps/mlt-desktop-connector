@@ -24,6 +24,9 @@ pub struct StatusSnapshot {
     pub last_heartbeat_at: Option<String>,
     pub last_error: Option<String>,
     pub current_job_id: Option<String>,
+    pub deep_link_message: Option<String>,
+    pub launch_session_id: Option<String>,
+    pub launch_status: Option<String>,
 }
 
 pub struct AppState {
@@ -35,6 +38,10 @@ pub struct AppState {
     pub last_heartbeat_at: Option<String>,
     pub last_error: Option<String>,
     pub current_job_id: Option<String>,
+    pub deep_link_route: Option<String>,
+    pub deep_link_message: Option<String>,
+    pub launch_session_id: Option<String>,
+    pub launch_status: Option<String>,
 }
 
 impl AppState {
@@ -49,6 +56,9 @@ impl AppState {
             last_heartbeat_at: self.last_heartbeat_at.clone(),
             last_error: self.last_error.clone(),
             current_job_id: self.current_job_id.clone(),
+            deep_link_message: self.deep_link_message.clone(),
+            launch_session_id: self.launch_session_id.clone(),
+            launch_status: self.launch_status.clone(),
         }
     }
 }

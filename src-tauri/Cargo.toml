@@ -1,6 +1,6 @@
 [package]
 name = "mlt-desktop-connector"
-version = "1.0.0"
+version = "1.0.3"
 description = "MLT Desktop Connector"
 authors = ["7Socialapps"]
 edition = "2021"
@@ -14,7 +14,9 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-deep-link = "2"
 tauri-plugin-single-instance = "2"
+url = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["sync", "time", "macros", "rt-multi-thread"] }
@@ -28,6 +30,7 @@ tracing-appender = "0.2"
 thiserror = "2"
 anyhow = "1"
 parking_lot = "0.12"
+sha2 = "0.10"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 
 [profile.release]
