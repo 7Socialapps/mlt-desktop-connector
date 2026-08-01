@@ -6,7 +6,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 use tracing::{info, warn};
 
-use crate::api::types::{ConnectorOs, PollPairingSessionRequest};
+use crate::api::types::{ConnectorOs, PairFromLaunchSessionRequest, PollPairingSessionRequest};
 use crate::api::ConnectorApiClient;
 use crate::credentials::{has_access_token, store_credentials, StoredCredentials};
 use crate::state::{AppState, ConnectionState};
@@ -59,6 +59,122 @@ impl PairingCoordinator {
         self.ui.lock().clone()
     }
 
+    /// Auto-pair from a dashboard launch session (deep link). No display code.
+    pub async fn pair_from_launch_session(
+        &self,
+        session_id: String,
+        device_id: String,
+        device_name: Option<String>,
+    ) -> Result<PairingUiState, String> {
+        info!(
+            device_id = %device_id,
+            session_id = %session_id,
+            "pair_from_launch_session: starting"
+        );
+
+        {
+            let mut ui = self.ui.lock();
+            ui.active = true;
+            ui.pairing_code = None;
+            ui.expires_at = None;
+            ui.status = "connecting".into();
+            ui.error = None;
+        }
+        let _ = self.app.emit("connector://pairing-changed", self.snapshot());
+
+        let request = PairFromLaunchSessionRequest {
+            action: "pair_from_launch_session".into(),
+            session_id: session_id.clone(),
+            device_id: device_id.clone(),
+            connector_version: CONNECTOR_VERSION.to_string(),
+            os: ConnectorOs::detect(),
+            capabilities: DEFAULT_CAPABILITIES.iter().map(|s| s.to_string()).collect(),
+            device_name,
+        };
+
+        let response = match self.client.pair_from_launch_session(request).await {
+            Ok(resp) => resp,
+            Err(err) => {
+                let msg = err.to_string();
+                warn!(error = %msg, "pair_from_launch_session: request failed");
+                {
+                    let mut ui = self.ui.lock();
+                    ui.active = false;
+                    ui.status = "error".into();
+                    ui.error = Some(msg.clone());
+                }
+                let _ = self.app.emit("connector://pairing-changed", self.snapshot());
+                return Err(msg);
+            }
+        };
+
+        if !response.ok {
+            let msg = response
+                .error
+                .unwrap_or_else(|| "Auto-pair failed".into());
+            warn!(
+                error = %msg,
+                error_code = ?response.error_code,
+                "pair_from_launch_session: backend rejected"
+            );
+            {
+                let mut ui = self.ui.lock();
+                ui.active = false;
+                ui.status = "error".into();
+                ui.error = Some(msg.clone());
+            }
+            let _ = self.app.emit("connector://pairing-changed", self.snapshot());
+            return Err(msg);
+        }
+
+        let (Some(access), Some(refresh), Some(user_id), Some(dealership_id)) = (
+            response.access_token,
+            response.refresh_token,
+            response.user_id,
+            response.dealership_id,
+        ) else {
+            let msg = "Auto-pair response missing credentials".to_string();
+            {
+                let mut ui = self.ui.lock();
+                ui.active = false;
+                ui.status = "error".into();
+                ui.error = Some(msg.clone());
+            }
+            let _ = self.app.emit("connector://pairing-changed", self.snapshot());
+            return Err(msg);
+        };
+
+        store_credentials(&StoredCredentials {
+            access_token: access,
+            refresh_token: refresh,
+            user_id,
+            dealership_id,
+        })
+        .map_err(|e| {
+            warn!(error = %e, "pair_from_launch_session: failed to store credentials");
+            e.to_string()
+        })?;
+
+        self.state.lock().paired = true;
+        self.state.lock().needs_reconnect = false;
+        self.state.lock().connection_state = ConnectionState::Idle;
+        self.polling.set_enabled(true);
+
+        {
+            let mut ui = self.ui.lock();
+            ui.active = false;
+            ui.pairing_code = None;
+            ui.status = "pairing_completed".into();
+            ui.error = None;
+        }
+        let _ = self.app.emit("connector://status-changed", ());
+        let _ = self.app.emit("connector://pairing-changed", self.snapshot());
+        info!(device_id = %device_id, "pair_from_launch_session: completed");
+        Ok(self.snapshot())
+    }
+
+    /// Legacy desktop-initiated pairing (creates a display code). Prefer
+    /// [`Self::pair_from_launch_session`] for dealer Connect UX.
     pub async fn start(&self, device_id: String, device_name: Option<String>) -> Result<PairingUiState, String> {
         info!(device_id = %device_id, "create_pairing_session: starting");
 

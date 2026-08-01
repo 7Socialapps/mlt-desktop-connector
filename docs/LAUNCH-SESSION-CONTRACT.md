@@ -13,9 +13,48 @@ Registered custom scheme: `mlt-desktop://`
 | `open-messenger` | `mlt-desktop://open-messenger?session=<opaque-id>` | Redeem launch session, open Facebook Messenger, ack `ready` / heartbeat `messenger_ready` |
 | `open-marketplace` | `mlt-desktop://open-marketplace` | Launch browser and open Marketplace |
 | `open-vehicle-create` | `mlt-desktop://open-vehicle-create` | Launch browser and open vehicle create form |
-| `pair` | `mlt-desktop://pair?session=<opaque-id>` | Start pairing workflow when unpaired |
+| `pair` | `mlt-desktop://pair?session=<opaque-id>` | Auto-pair when unpaired (no display code) |
+| `connect-facebook` (unpaired) | `mlt-desktop://connect-facebook?session=<opaque-id>` | Auto-pair via `pair_from_launch_session`, then open Facebook |
 
 The `session` query parameter is an **opaque one-time id** (alphanumeric, `-`, `_`, max 128 chars). Never put JWTs, Neon tokens, or Supabase keys in URLs.
+
+**Product rule:** Dealers never enter a pairing code. Login → Connect → deep-link session → automatic pair.
+
+## Backend action: `pair_from_launch_session`
+
+**Endpoint:** `browser-connector` (POST) — unpaired Desktop Connector only
+
+**Auth:** none (session id is the capability; short TTL + one-time redeem)
+
+### Request
+
+```json
+{
+  "action": "pair_from_launch_session",
+  "sessionId": "<opaque-launch-session-id>",
+  "deviceId": "<connector-device-uuid>",
+  "connectorVersion": "1.0.7",
+  "os": "macos",
+  "capabilities": ["facebook_marketplace_posting"]
+}
+```
+
+### Success response
+
+```json
+{
+  "ok": true,
+  "status": "pairing_completed",
+  "accessToken": "...",
+  "refreshToken": "...",
+  "userId": "...",
+  "dealershipId": "...",
+  "intent": "connect_facebook",
+  "deviceId": "..."
+}
+```
+
+Marks the launch session redeemed and issues device tokens. No pairing code.
 
 ## Backend action: `redeem_launch_session`
 

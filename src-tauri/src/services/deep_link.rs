@@ -139,7 +139,7 @@ impl DeepLinkCoordinator {
         self.updater.request_check(self.app.clone());
     }
 
-    async fn handle_pair(&self, _session: Option<String>) {
+    async fn handle_pair(&self, session: Option<String>) {
         let cred_status = credentials::credential_status();
         if cred_status == CredentialStatus::NeedsReconnect {
             self.set_message(
@@ -151,25 +151,44 @@ impl DeepLinkCoordinator {
         }
 
         if credentials::is_paired() {
-            self.set_message("This device is already paired.".into());
+            self.set_message("Connected".into());
             return;
         }
 
-        self.set_message("Starting pairing — enter the code in your MLT Dashboard.".into());
-        self.set_launch_status(LaunchStatus::PairingRequired);
+        let Some(session_id) = session else {
+            self.set_message(
+                "Click Connect in MLT on the web to link this computer. Keep this app open."
+                    .into(),
+            );
+            self.set_launch_status(LaunchStatus::PairingRequired);
+            return;
+        };
 
-        let device_id = self.state.lock().device_id.to_string();
-        if let Err(err) = self.pairing.start(device_id, None).await {
-            self.set_message(format!("Pairing could not start: {err}"));
-            self.set_launch_status(LaunchStatus::Error);
+        self.set_message("Connecting…".into());
+        self.set_launch_status(LaunchStatus::AppOpened);
+        if self.auto_pair_from_session(&session_id).await {
+            self.set_message("Connected".into());
         }
     }
 
     async fn handle_connect_facebook(&self, session: Option<String>) {
-        self.set_message("Facebook connection requested from MLT Dashboard".into());
+        self.set_message("Connecting…".into());
         self.set_launch_status(LaunchStatus::AppOpened);
 
-        if let Some(session_id) = &session {
+        if !credentials::is_paired() {
+            let Some(session_id) = &session else {
+                self.set_message(
+                    "Click Connect in MLT on the web to link this computer. Keep this app open."
+                        .into(),
+                );
+                self.set_launch_status(LaunchStatus::PairingRequired);
+                return;
+            };
+            // pair_from_launch_session also redeems the launch session.
+            if !self.auto_pair_from_session(session_id).await {
+                return;
+            }
+        } else if let Some(session_id) = &session {
             if !self.redeem_session(session_id, "Connect Facebook").await {
                 return;
             }
@@ -290,13 +309,34 @@ impl DeepLinkCoordinator {
 
     /// Leads "Start monitoring" → redeem launch session, open Messenger, heartbeat ready.
     async fn handle_open_messenger(&self, session: Option<String>) {
-        self.set_message("Opening Messenger for Leads monitoring…".into());
+        self.set_message("Connecting…".into());
         self.set_launch_status(LaunchStatus::AppOpened);
 
-        if let Some(session_id) = &session {
+        if !credentials::is_paired() {
+            let Some(session_id) = &session else {
+                self.set_message(
+                    "Click Connect in MLT on the web to link this computer. Keep this app open."
+                        .into(),
+                );
+                self.set_launch_status(LaunchStatus::PairingRequired);
+                return;
+            };
+            if !self.auto_pair_from_session(session_id).await {
+                self.ack_session(
+                    session_id,
+                    "error",
+                    Some("Could not link this computer automatically".into()),
+                )
+                .await;
+                return;
+            }
+        } else if let Some(session_id) = &session {
             if !self.redeem_session(session_id, "Start monitoring").await {
                 return;
             }
+        }
+
+        if let Some(session_id) = &session {
             self.ack_session(
                 session_id,
                 "launching",
@@ -405,7 +445,37 @@ impl DeepLinkCoordinator {
         }
     }
 
-    /// Redeem dashboard launch session. Returns false when the flow should stop.
+    /// Auto-pair using the dashboard launch session from the deep link.
+    /// Returns false when the flow should stop (shows Connecting… / Not connected only).
+    async fn auto_pair_from_session(&self, session_id: &str) -> bool {
+        self.state.lock().launch_session_id = Some(session_id.to_string());
+        self.set_message("Connecting…".into());
+        self.set_launch_status(LaunchStatus::PairingRequired);
+
+        let device_id = self.state.lock().device_id.to_string();
+        match self
+            .pairing
+            .pair_from_launch_session(session_id.to_string(), device_id, None)
+            .await
+        {
+            Ok(_) => {
+                self.set_launch_status(LaunchStatus::LaunchSessionRedeemed);
+                self.set_message("Connected".into());
+                true
+            }
+            Err(err) => {
+                warn!(error = %err, "auto-pair from launch session failed");
+                self.set_message(
+                    "Couldn’t connect automatically. Click Connect in MLT on the web again."
+                        .into(),
+                );
+                self.set_launch_status(LaunchStatus::Error);
+                false
+            }
+        }
+    }
+
+    /// Redeem dashboard launch session (paired devices only). Returns false when the flow should stop.
     async fn redeem_session(&self, session_id: &str, action_label: &str) -> bool {
         self.state.lock().launch_session_id = Some(session_id.to_string());
         let device_id = self.state.lock().device_id.to_string();
@@ -415,12 +485,11 @@ impl DeepLinkCoordinator {
                 true
             }
             Err(crate::launch_session::LaunchSessionError::NotPaired) => {
+                // Should be rare — unpaired path uses auto_pair_from_session first.
                 self.set_message(format!(
                     "Click Connect in MLT on the web, then try {action_label} again."
                 ));
                 self.set_launch_status(LaunchStatus::PairingRequired);
-                let device_id = self.state.lock().device_id.to_string();
-                let _ = self.pairing.start(device_id, None).await;
                 false
             }
             Err(crate::launch_session::LaunchSessionError::AlreadyRedeemed) => {
@@ -464,8 +533,7 @@ impl DeepLinkCoordinator {
                 "Click Connect in MLT on the web before {purpose}."
             ));
             self.set_launch_status(LaunchStatus::PairingRequired);
-            let device_id = self.state.lock().device_id.to_string();
-            let _ = self.pairing.start(device_id, None).await;
+            // Do NOT start a code-based pairing session — dealers never enter codes.
             return false;
         }
         true

@@ -121,6 +121,7 @@ type DealerView =
   | { kind: "starting"; subtitle: string }
   | { kind: "setup"; subtitle: string; progress?: number }
   | { kind: "updating"; subtitle: string; progress?: number }
+  | { kind: "connecting"; subtitle: string }
   | { kind: "not_connected"; subtitle: string; cta: "connect" | "open_facebook" | "retry" }
   | { kind: "connected"; subtitle: string };
 
@@ -133,6 +134,7 @@ function isFacebookLoggedIn(browser: BrowserManagerSnapshot, runtime: RuntimeSta
 
 function computeDealerView(
   status: ConnectorStatus,
+  pairing: PairingState,
   browser: BrowserManagerSnapshot,
   runtime: RuntimeStatus,
 ): DealerView {
@@ -163,6 +165,14 @@ function computeDealerView(
     return {
       kind: "starting",
       subtitle: "Starting up…",
+    };
+  }
+
+  // Auto-pair in progress from dashboard Connect deep link — never show a code.
+  if (!status.paired && (pairing.active || pairing.status === "connecting")) {
+    return {
+      kind: "connecting",
+      subtitle: status.deep_link_message ?? "Connecting… Keep this app open.",
     };
   }
 
@@ -215,7 +225,7 @@ function render(
   browser: BrowserManagerSnapshot,
   runtime: RuntimeStatus,
 ) {
-  const view = computeDealerView(status, browser, runtime);
+  const view = computeDealerView(status, pairing, browser, runtime);
   const busy = Boolean(actionInProgress);
   const connected = view.kind === "connected";
   const primaryLabel =
@@ -224,7 +234,7 @@ function render(
         ? "Open Facebook"
         : view.cta === "retry"
           ? "Try again"
-          : "Connect"
+          : "Waiting for Connect…"
       : "Open Facebook";
 
   const statusTitle =
@@ -232,9 +242,16 @@ function render(
       ? "Connected"
       : view.kind === "updating"
         ? "Updating…"
-        : view.kind === "setup" || view.kind === "starting"
-          ? "Setting up…"
-          : "Not connected";
+        : view.kind === "connecting"
+          ? "Connecting…"
+          : view.kind === "setup" || view.kind === "starting"
+            ? "Setting up…"
+            : "Not connected";
+
+  const aboutPairingCode =
+    showAbout && pairing.pairing_code
+      ? `<p class="helper mono">Dev pairing code: ${pairing.pairing_code}</p>`
+      : "";
 
   app.innerHTML = `
     <main class="dealer-shell">
@@ -260,15 +277,6 @@ function render(
       }
 
       ${
-        pairing.active && pairing.pairing_code
-          ? `<section class="dealer-pairing" role="status">
-              <p class="dealer-status-sub">Connecting… enter this code in MLT if asked:</p>
-              <div class="pairing-code">${pairing.pairing_code}</div>
-            </section>`
-          : ""
-      }
-
-      ${
         actionError
           ? `<p class="error" role="alert">${actionError}</p>`
           : ""
@@ -280,9 +288,14 @@ function render(
             ? `<button id="primary-cta" class="dealer-primary" ${busy ? "disabled" : ""}>Open Facebook</button>`
             : view.kind === "setup" ||
                 view.kind === "starting" ||
-                view.kind === "updating"
+                view.kind === "updating" ||
+                view.kind === "connecting"
               ? `<button class="dealer-primary" disabled>${
-                  view.kind === "updating" ? "Updating…" : "Please wait…"
+                  view.kind === "updating"
+                    ? "Updating…"
+                    : view.kind === "connecting"
+                      ? "Connecting…"
+                      : "Please wait…"
                 }</button>`
               : `<button id="primary-cta" class="dealer-primary" ${busy ? "disabled" : ""}>${
                   busy ? "Working…" : primaryLabel
@@ -297,6 +310,7 @@ function render(
       <details class="dealer-about" ${showAbout ? "open" : ""}>
         <summary>About</summary>
         <p class="helper">Version ${status.connector_version}</p>
+        ${aboutPairingCode}
         <button id="open-log-folder" type="button" class="dealer-linkish">Open logs folder</button>
       </details>
     </main>
@@ -324,8 +338,10 @@ function bindActions(view: DealerView, _status: ConnectorStatus) {
       void refresh();
       return;
     }
-    // Not paired — start pairing; dealer finishes via dashboard Connect.
-    void startPairing();
+    // Not paired — dealers never enter a code; pairing happens via MLT Connect deep link.
+    actionError =
+      "Open MLT in your browser, sign in, then click Connect. This app will link automatically.";
+    void refresh();
   });
 }
 
@@ -341,27 +357,9 @@ async function withAction(name: string, fn: () => Promise<void>) {
   }
 }
 
-async function startPairing() {
-  actionError = null;
-  actionInProgress = "connect";
-  await refresh();
-  try {
-    await invoke<PairingState>("start_pairing_session", { deviceName: null });
-    actionError = null;
-  } catch (err) {
-    actionError =
-      "Couldn’t start connecting. Click Connect in MLT on the web, or try again.";
-    console.error(err);
-  } finally {
-    actionInProgress = null;
-    await refresh();
-  }
-}
-
 async function openFacebookLogin() {
   await withAction("open_facebook", async () => {
     try {
-      // Ensure browser is up, then open Facebook login.
       try {
         await invoke<BrowserManagerSnapshot>("browser_launch");
       } catch {
@@ -400,6 +398,9 @@ async function refresh() {
     updateState = update;
     if (update.phase === "error" && update.message && !actionError) {
       actionError = update.message;
+    }
+    if (pairing.error && !actionError && pairing.status === "error") {
+      actionError = pairing.error;
     }
     render(status, pairing, browser, runtime);
   } catch (err) {

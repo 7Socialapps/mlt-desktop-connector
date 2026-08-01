@@ -299,6 +299,39 @@ pub struct CreatePairingSessionResponse {
     pub error_code: Option<String>,
 }
 
+/// Dashboard Connect deep-link → unpaired device auto-pair (no display code).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PairFromLaunchSessionRequest {
+    pub action: String,
+    pub session_id: String,
+    pub device_id: String,
+    pub connector_version: String,
+    pub os: ConnectorOs,
+    pub capabilities: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub device_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PairFromLaunchSessionResponse {
+    pub ok: bool,
+    #[serde(default)]
+    pub status: Option<String>,
+    pub access_token: Option<String>,
+    pub refresh_token: Option<String>,
+    pub access_expires_in: Option<u64>,
+    pub refresh_expires_in: Option<u64>,
+    pub device_id: Option<String>,
+    pub user_id: Option<String>,
+    pub dealership_id: Option<String>,
+    #[serde(default)]
+    pub intent: Option<String>,
+    pub error: Option<String>,
+    pub error_code: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PollPairingSessionRequest {
