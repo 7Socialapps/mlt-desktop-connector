@@ -267,3 +267,126 @@ footer p {
 #reset-profile {
   border-color: #5c3a3a;
 }
+
+/* Dealer-facing status window (v1.0.5+) */
+.dealer-shell {
+  max-width: 420px;
+  margin: 0 auto;
+  padding: 1.5rem 1.5rem 1.75rem;
+}
+
+.dealer-header h1 {
+  margin: 0 0 1.25rem;
+  font-size: 1.05rem;
+  font-weight: 600;
+}
+
+.dealer-status {
+  display: flex;
+  gap: 0.9rem;
+  align-items: flex-start;
+  padding: 1.1rem 1.15rem;
+  border-radius: 12px;
+  border: 1px solid #2a3544;
+  background: #151c27;
+}
+
+.dealer-status.is-connected {
+  border-color: rgba(125, 255, 178, 0.35);
+  background: rgba(26, 61, 46, 0.45);
+}
+
+.dealer-status.is-offline {
+  border-color: rgba(255, 157, 157, 0.35);
+  background: rgba(61, 26, 26, 0.35);
+}
+
+.dealer-status-dot {
+  width: 12px;
+  height: 12px;
+  margin-top: 0.35rem;
+  border-radius: 999px;
+  flex-shrink: 0;
+  background: #ff9d9d;
+}
+
+.dealer-status.is-connected .dealer-status-dot {
+  background: #7dffb2;
+}
+
+.dealer-status-title {
+  margin: 0;
+  font-size: 1.35rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.dealer-status-sub {
+  margin: 0.35rem 0 0;
+  color: #9aa7b8;
+  font-size: 0.9rem;
+  line-height: 1.45;
+}
+
+.dealer-actions {
+  margin-top: 1.25rem;
+}
+
+.dealer-primary {
+  width: 100%;
+  padding: 0.85rem 1rem;
+  border: none;
+  border-radius: 10px;
+  background: #5b9dff;
+  color: #0b1220;
+  font-size: 1rem;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.dealer-primary:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.dealer-footnote {
+  margin: 1rem 0 0;
+  color: #9aa7b8;
+  font-size: 0.8rem;
+  line-height: 1.4;
+}
+
+.dealer-about {
+  margin-top: 1.25rem;
+  padding-top: 0.85rem;
+  border-top: 1px solid #2a3544;
+  color: #9aa7b8;
+  font-size: 0.8rem;
+}
+
+.dealer-about summary {
+  cursor: pointer;
+  user-select: none;
+}
+
+.dealer-linkish {
+  margin-top: 0.5rem;
+  padding: 0;
+  border: none;
+  background: none;
+  color: #5b9dff;
+  font-size: 0.8rem;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.dealer-pairing {
+  margin-top: 1rem;
+}
+
+.dealer-shell .error {
+  margin-top: 0.85rem;
+  color: #ff9d9d;
+  font-size: 0.85rem;
+}

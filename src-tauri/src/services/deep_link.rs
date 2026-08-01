@@ -134,7 +134,8 @@ impl DeepLinkCoordinator {
         let cred_status = credentials::credential_status();
         if cred_status == CredentialStatus::NeedsReconnect {
             self.set_message(
-                "This device was revoked. Pair again from the MLT Dashboard.".into(),
+                "This computer was disconnected. Click Connect in MLT on the web to link it again."
+                    .into(),
             );
             self.set_launch_status(LaunchStatus::DeviceRevoked);
             return;
@@ -406,7 +407,7 @@ impl DeepLinkCoordinator {
             }
             Err(crate::launch_session::LaunchSessionError::NotPaired) => {
                 self.set_message(format!(
-                    "Pair this device first, then try {action_label} again."
+                    "Click Connect in MLT on the web, then try {action_label} again."
                 ));
                 self.set_launch_status(LaunchStatus::PairingRequired);
                 let device_id = self.state.lock().device_id.to_string();
@@ -442,14 +443,17 @@ impl DeepLinkCoordinator {
     async fn ensure_paired_for_browser(&self, purpose: &str) -> bool {
         if credentials::credential_status() == CredentialStatus::NeedsReconnect {
             self.set_message(
-                "This device was revoked. Pair again from the MLT Dashboard.".into(),
+                "This computer was disconnected. Click Connect in MLT on the web to link it again."
+                    .into(),
             );
             self.set_launch_status(LaunchStatus::DeviceRevoked);
             return false;
         }
 
         if !credentials::is_paired() {
-            self.set_message(format!("Pair this device before {purpose}."));
+            self.set_message(format!(
+                "Click Connect in MLT on the web before {purpose}."
+            ));
             self.set_launch_status(LaunchStatus::PairingRequired);
             let device_id = self.state.lock().device_id.to_string();
             let _ = self.pairing.start(device_id, None).await;
