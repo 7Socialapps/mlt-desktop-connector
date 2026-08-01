@@ -288,7 +288,7 @@ impl DeepLinkCoordinator {
                     ));
                 } else {
                     self.set_message(
-                        "Sign into Facebook in the browser window. Your password is never stored."
+                        "Sign into Facebook in the Connector’s browser window (not Safari). Your password is never stored."
                             .into(),
                     );
                 }

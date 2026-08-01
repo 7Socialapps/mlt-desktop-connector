@@ -212,7 +212,33 @@ async fn browser_open_facebook_login(
         Err(err) => return Err(format!("Browser recovery failed: {err}")),
     }
 
-    let opened = services.facebook_runtime.open_facebook_login()?;
+    if let Some(browsers) = browser::playwright_browsers_path() {
+        browser::clear_chromium_quarantine(&browsers);
+    }
+
+    let opened = match services.facebook_runtime.open_facebook_login() {
+        Ok(snap) => snap,
+        Err(err) => {
+            // Surface the real Playwright/sidecar error (never a generic Connect hint).
+            let lower = err.to_lowercase();
+            if lower.contains("executable doesn't exist")
+                || lower.contains("chromium_not_installed")
+                || lower.contains("chromium is not installed")
+            {
+                return Err(
+                    "Facebook browser files are missing. Quit the app, reinstall the latest Desktop Connector, then click Open Facebook again."
+                        .into(),
+                );
+            }
+            if lower.contains("quarantine") || lower.contains("cannot be opened") {
+                return Err(
+                    "macOS blocked the Facebook browser. Quit the app, run: xattr -cr \"/Applications/MLT Desktop Connector.app\", then open it again."
+                        .into(),
+                );
+            }
+            return Err(err);
+        }
+    };
     services.heartbeat.trigger_now();
     Ok(opened)
 }
@@ -433,6 +459,11 @@ pub fn run() {
 
             if let Ok(resource_dir) = app.path().resource_dir() {
                 browser::set_resource_root(resource_dir);
+            }
+            if let Ok(app_data) = app.path().app_data_dir() {
+                let browsers = browser::configure_playwright_browsers(&app_data);
+                // Best-effort again before any Open Facebook click.
+                browser::clear_chromium_quarantine(&browsers);
             }
 
             let launch_store = LaunchSessionStore::load(

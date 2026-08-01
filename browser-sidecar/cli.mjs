@@ -80,6 +80,7 @@ async function detectRuntime() {
     chromium_installed: false,
     chromium_path: null,
     node_version: process.version,
+    browsers_path: process.env.PLAYWRIGHT_BROWSERS_PATH ?? null,
   };
 
   if (!playwrightVersion) {
@@ -87,9 +88,15 @@ async function detectRuntime() {
   }
 
   try {
+    // executablePath() returns the *expected* location even when missing —
+    // always verify on disk or Open Facebook skips install and launch fails.
     const chromiumPath = chromium.executablePath();
-    result.chromium_installed = Boolean(chromiumPath);
-    result.chromium_path = chromiumPath ?? null;
+    const exists = Boolean(chromiumPath) && fs.existsSync(chromiumPath);
+    result.chromium_installed = exists;
+    result.chromium_path = exists ? chromiumPath : chromiumPath || null;
+    if (!exists && chromiumPath) {
+      result.detect_error = `Chromium binary missing at ${chromiumPath}`;
+    }
   } catch (err) {
     result.chromium_installed = false;
     result.detect_error = err instanceof Error ? err.message : String(err);
@@ -105,12 +112,22 @@ async function launchTest() {
   }
   clearTestState();
 
+  const executablePath = chromium.executablePath();
+  if (!executablePath || !fs.existsSync(executablePath)) {
+    fail(
+      "CHROMIUM_NOT_INSTALLED",
+      `Chromium is not installed at ${executablePath || "(unknown path)"}`,
+    );
+  }
+  clearQuarantine(executablePath);
+
   const browser = await chromium.launch({
     headless: false,
+    executablePath,
     args: ["--disable-dev-shm-usage"],
   });
-  const pid =
-    typeof browser.process === "function" ? (browser.process()?.pid ?? null) : null;
+  const proc = typeof browser.process === "function" ? browser.process() : null;
+  const pid = proc?.pid ?? null;
   if (pid) {
     writeTestState({ pid, launched_at: new Date().toISOString() });
   }
@@ -118,8 +135,12 @@ async function launchTest() {
   const page = await context.newPage();
   await page.goto("about:blank");
   // Detach — test browser stays open until close-test kills by PID.
+  // Unref so this CLI process can exit after emitting JSON (packaged detect/install).
   browser.on("disconnected", () => clearTestState());
-  return { ok: true, launched: true, pid };
+  if (proc && typeof proc.unref === "function") {
+    proc.unref();
+  }
+  return { ok: true, launched: true, pid, chromium_path: executablePath };
 }
 
 async function closeTest() {
@@ -132,6 +153,18 @@ async function closeTest() {
   }
   clearTestState();
   return { ok: true, closed: true, pid: state.pid };
+}
+
+function clearQuarantine(targetPath) {
+  if (process.platform !== "darwin" || !targetPath || !fs.existsSync(targetPath)) {
+    return;
+  }
+  try {
+    const { spawnSync } = require("node:child_process");
+    spawnSync("xattr", ["-cr", targetPath], { stdio: "ignore" });
+  } catch {
+    /* best-effort — Gatekeeper may still prompt */
+  }
 }
 
 async function installChromium() {
@@ -151,7 +184,17 @@ async function installChromium() {
 
     child.on("close", (code) => {
       if (code === 0) {
+        const browsersPath =
+          process.env.PLAYWRIGHT_BROWSERS_PATH ||
+          path.dirname(path.dirname(chromium.executablePath()));
+        clearQuarantine(browsersPath);
+        try {
+          clearQuarantine(chromium.executablePath());
+        } catch {
+          /* ignore */
+        }
         emit({ ok: true, installed: true });
+        resolve();
         return;
       }
       emit({
@@ -159,6 +202,7 @@ async function installChromium() {
         error_code: "CHROMIUM_INSTALL_FAILED",
         error: stderr.trim() || `playwright install exited with code ${code}`,
       });
+      resolve();
     });
 
     child.on("error", (err) => {
@@ -167,6 +211,7 @@ async function installChromium() {
         error_code: "CHROMIUM_INSTALL_FAILED",
         error: err instanceof Error ? err.message : String(err),
       });
+      resolve();
     });
   });
 }
@@ -199,4 +244,10 @@ async function main() {
   }
 }
 
-void main();
+void main().finally(() => {
+  // launch-test keeps Chromium alive via unref'd child; force CLI exit so
+  // Rust `run_sidecar_command` is not stuck waiting on an open handle.
+  if ((process.argv[2] ?? "") === "launch-test") {
+    setImmediate(() => process.exit(0));
+  }
+});

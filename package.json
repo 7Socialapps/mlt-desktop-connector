@@ -1,7 +1,7 @@
 {
   "name": "mlt-desktop-connector",
   "private": true,
-  "version": "1.1.1",
+  "version": "1.1.2",
   "type": "module",
   "description": "MLT Desktop Connector — local Facebook Marketplace posting agent",
   "scripts": {
@@ -16,7 +16,7 @@
     "browser:test": "node browser-sidecar/cli.mjs launch-test && node browser-sidecar/cli.mjs close-test",
     "build:staging": "bash scripts/build-staging.sh",
     "build:production": "bash scripts/build-production.sh",
-    "test": "node browser-sidecar/facebook-detector.test.mjs && node browser-sidecar/marketplace-evaluator.test.mjs && node browser-sidecar/messenger-evaluator.test.mjs && node browser-sidecar/notifications-evaluator.test.mjs && node browser-sidecar/navigation.test.mjs && node browser-sidecar/vehicle-create-verifier.test.mjs && node browser-sidecar/browser-process.test.mjs && node browser-sidecar/marketplace/form.test.mjs && cd src-tauri && cargo test"
+    "test": "node browser-sidecar/facebook-detector.test.mjs && node browser-sidecar/marketplace-evaluator.test.mjs && node browser-sidecar/messenger-evaluator.test.mjs && node browser-sidecar/notifications-evaluator.test.mjs && node browser-sidecar/navigation.test.mjs && node browser-sidecar/vehicle-create-verifier.test.mjs && node browser-sidecar/browser-process.test.mjs && node browser-sidecar/chromium-detect.test.mjs && node browser-sidecar/marketplace/form.test.mjs && cd src-tauri && cargo test"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.4.0",

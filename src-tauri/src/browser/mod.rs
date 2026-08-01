@@ -16,7 +16,11 @@ pub use marketplace::{
 };
 pub use profile::{ProfileSnapshot, ProfileStatus};
 pub use runtime::BrowserRuntimeService;
-pub use sidecar::{resolve_sidecar_cli, resolve_sidecar_server, run_sidecar_command, set_resource_root, SidecarDaemon};
+pub use sidecar::{
+    clear_chromium_quarantine, configure_playwright_browsers, playwright_browsers_path,
+    resolve_sidecar_cli, resolve_sidecar_server, run_sidecar_command, set_playwright_browsers_path,
+    set_resource_root, SidecarDaemon,
+};
 pub use types::{
     BrowserActivePage, BrowserManagerSnapshot, BrowserRuntimeSnapshot, BrowserRuntimeStatus,
     SidecarDaemonLine, SidecarSimpleResponse,
