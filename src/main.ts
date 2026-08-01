@@ -270,13 +270,13 @@ function computeDealerView(
     connectingStartedAt = null;
   }
 
-  if (status.needs_reconnect || !status.paired) {
+  if (status.needs_reconnect) {
     return {
       kind: "not_connected",
       subtitle:
         status.deep_link_message ??
-        "Click Connect in MLT on the web to link this computer. Keep this app open.",
-      cta: "wait",
+        "This computer was disconnected. Click Connect in MLT on the web to link it again.",
+      cta: "open_facebook",
     };
   }
 
@@ -288,11 +288,22 @@ function computeDealerView(
     };
   }
 
+  // Unpaired: still allow Open Facebook so dealers can sign into FB while Connect pairs MLT.
+  if (!status.paired) {
+    return {
+      kind: "not_connected",
+      subtitle:
+        status.deep_link_message ??
+        "Click Connect in MLT on the web to link this computer — or Open Facebook to sign in.",
+      cta: "open_facebook",
+    };
+  }
+
   if (!browser.chromium_installed || !browser.sidecar_running) {
     return {
       kind: "not_connected",
       subtitle:
-        "Almost ready — click Connect in MLT on the web, or Open Facebook below to finish setup.",
+        "Almost ready — click Open Facebook to finish browser setup (downloads once if needed).",
       cta: "open_facebook",
     };
   }
@@ -366,7 +377,7 @@ function render(
               }</button>`
             : view.kind === "not_connected" && view.cta === "open_facebook"
               ? `<button id="primary-cta" class="dealer-primary" ${busy ? "disabled" : ""}>${
-                  busy ? "Working…" : "Open Facebook"
+                  busy ? "Opening Facebook…" : "Open Facebook"
                 }</button>`
               : view.kind === "not_connected" && view.cta === "retry"
                 ? `<button id="primary-cta" class="dealer-primary" ${busy ? "disabled" : ""}>Try again</button>`
@@ -518,18 +529,37 @@ async function retryUpdate() {
   });
 }
 
+function dealerFacebookError(err: unknown): string {
+  const raw = typeof err === "string" ? err : err instanceof Error ? err.message : String(err ?? "");
+  const msg = raw.replace(/^Error:\s*/i, "").trim();
+  if (!msg) {
+    return "Couldn’t open Facebook. Click Open Facebook to try again.";
+  }
+  if (
+    msg.includes("missing") ||
+    msg.includes("reinstall") ||
+    msg.includes("ERR_MODULE") ||
+    msg.includes("playwright")
+  ) {
+    return "Browser components are missing. Quit this app and install the latest Desktop Connector, then try Open Facebook again.";
+  }
+  if (msg.includes("timed out") || msg.includes("timeout") || msg.includes("network")) {
+    return "Browser setup timed out. Check your network, then click Open Facebook again.";
+  }
+  if (msg.length > 220) {
+    return `${msg.slice(0, 200)}…`;
+  }
+  return msg;
+}
+
 async function openFacebookLogin() {
   await withAction("open_facebook", async () => {
     try {
-      try {
-        await invoke<BrowserManagerSnapshot>("browser_launch");
-      } catch {
-        /* launch may fail if already running — still try login */
-      }
+      actionError = null;
+      // Single command: provisions Chromium if needed, recovers sidecar, opens facebook.com
       await invoke<BrowserManagerSnapshot>("browser_open_facebook_login");
     } catch (err) {
-      actionError =
-        "Couldn’t open Facebook. Click Connect in MLT on the web, then try again.";
+      actionError = dealerFacebookError(err);
       console.error(err);
     }
   });

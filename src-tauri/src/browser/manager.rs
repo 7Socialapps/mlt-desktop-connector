@@ -245,6 +245,14 @@ impl BrowserManager {
 
     pub fn launch(&self) -> Result<BrowserManagerSnapshot, String> {
         let _guard = self.lifecycle_lock.lock();
+        let snap = self.snapshot();
+        if snap.status.is_terminal_error()
+            || !snap.chromium_installed
+            || !snap.sidecar_running
+            || !self.daemon.is_running()
+        {
+            self.recover_runtime_inner()?;
+        }
         self.launch_inner(false)
     }
 
@@ -312,7 +320,8 @@ impl BrowserManager {
 
     pub fn open_facebook_login(&self) -> Result<BrowserManagerSnapshot, String> {
         let _guard = self.lifecycle_lock.lock();
-        self.ensure_browser_for_navigation()?;
+        // Use inner — we already hold lifecycle_lock (parking_lot is not re-entrant).
+        self.ensure_browser_for_navigation_inner()?;
 
         {
             let mut guard = self.state.lock();
@@ -857,18 +866,126 @@ impl BrowserManager {
         }
     }
 
+    /// Re-detect Chromium, clear sticky BrowserError, and ensure the sidecar daemon is up.
+    /// Call before launch / Open Facebook so first-run failures are not a dead end.
+    pub fn recover_runtime(&self) -> Result<BrowserManagerSnapshot, String> {
+        let _guard = self.lifecycle_lock.lock();
+        self.recover_runtime_inner()?;
+        Ok(self.snapshot())
+    }
+
+    fn recover_runtime_inner(&self) -> Result<(), String> {
+        if self.runtime.cli_path().as_os_str().is_empty() {
+            return Err(
+                "Browser helper is missing from this install. Quit and reinstall the latest Desktop Connector."
+                    .into(),
+            );
+        }
+        if self.daemon.server_path().as_os_str().is_empty() {
+            return Err(
+                "Browser helper is missing from this install. Quit and reinstall the latest Desktop Connector."
+                    .into(),
+            );
+        }
+
+        let detect = self.runtime.detect().map_err(|e| e.to_string())?;
+        self.merge_runtime(&detect);
+
+        if !detect.enabled {
+            return Err("Facebook helper is turned off on this computer. Contact support.".into());
+        }
+        if !detect.playwright_installed {
+            return Err(
+                "Browser components are missing. Quit and reinstall the latest Desktop Connector."
+                    .into(),
+            );
+        }
+        if !detect.chromium_installed {
+            return Err("CHROMIUM_NOT_INSTALLED".into());
+        }
+
+        // Sticky terminal error from a prior failed init must not block Open Facebook forever.
+        if self.snapshot().status.is_terminal_error()
+            || self.snapshot().status == BrowserRuntimeStatus::BrowserNotInstalled
+        {
+            self.clear_error();
+            self.set_status(BrowserRuntimeStatus::BrowserStopped);
+            {
+                let mut guard = self.state.lock();
+                guard.restart_attempts = 0;
+                guard.auto_restart_enabled = true;
+            }
+        }
+
+        if !self.daemon.is_running() {
+            if let Err(err) = self.daemon.start() {
+                warn!(error = %err, "recover: failed to start browser sidecar");
+                self.record_error(
+                    "Failed to start browser helper",
+                    Some("SIDECAR_START_FAILED".into()),
+                );
+                self.set_status(BrowserRuntimeStatus::BrowserError);
+                self.emit_changed();
+                return Err(
+                    "Couldn’t start the Facebook browser helper. Click Open Facebook to try again."
+                        .into(),
+                );
+            }
+            if self
+                .daemon
+                .request("ping", serde_json::json!({}), HEALTH_CHECK_TIMEOUT)
+                .is_err()
+            {
+                warn!("recover: sidecar did not respond to ping");
+                let _ = self.daemon.stop();
+                self.record_error(
+                    "Browser helper failed readiness check",
+                    Some("SIDECAR_NOT_READY".into()),
+                );
+                self.set_status(BrowserRuntimeStatus::BrowserError);
+                {
+                    let mut guard = self.state.lock();
+                    guard.sidecar_running = false;
+                }
+                self.emit_changed();
+                return Err(
+                    "Browser helper didn’t start. Click Open Facebook to try again.".into(),
+                );
+            }
+            {
+                let mut guard = self.state.lock();
+                guard.sidecar_running = true;
+            }
+            self.start_event_monitor();
+            self.emit_changed();
+        } else {
+            let mut guard = self.state.lock();
+            guard.sidecar_running = true;
+            guard.chromium_installed = true;
+        }
+
+        Ok(())
+    }
+
     fn ensure_browser_for_navigation_inner(&self) -> Result<(), String> {
         if !self.state.lock().enabled {
             return Err("Browser subsystem disabled".into());
         }
-        if self.snapshot().status.is_terminal_error() {
-            return Err("Browser is in terminal error state".into());
+
+        let snap = self.snapshot();
+        let needs_recover = snap.status.is_terminal_error()
+            || !snap.chromium_installed
+            || !snap.sidecar_running
+            || !self.daemon.is_running();
+        if needs_recover {
+            self.recover_runtime_inner()?;
         }
+
         if self.snapshot().status != BrowserRuntimeStatus::BrowserReady {
             self.launch_inner(false)?;
         }
         if self.snapshot().status != BrowserRuntimeStatus::BrowserReady {
-            return Err("Browser is not ready".into());
+            return Err("Browser is not ready — click Open Facebook to try again.".into());
         }
         Ok(())
     }
