@@ -255,6 +255,13 @@ impl ConnectorApiClient {
         self.post(&request, &AuthHeaders::default()).await
     }
 
+    pub async fn pair_from_launch_session(
+        &self,
+        request: PairFromLaunchSessionRequest,
+    ) -> Result<PairFromLaunchSessionResponse, ApiClientError> {
+        self.post(&request, &AuthHeaders::default()).await
+    }
+
     pub async fn poll_pairing_session(
         &self,
         request: PollPairingSessionRequest,
