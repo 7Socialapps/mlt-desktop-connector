@@ -106,6 +106,12 @@ interface RuntimeStatus {
   timeout_reason: string | null;
 }
 
+interface RuntimeLocation {
+  from_dmg_volume: boolean;
+  from_applications: boolean;
+  exe_path: string;
+}
+
 /** Hard caps — dealers must never see infinite Please wait / Force Quit. */
 const SETUP_UI_MAX_MS = 45_000;
 const CONNECTING_UI_MAX_MS = 45_000;
@@ -130,22 +136,27 @@ let updateState: UpdateUiState = {
   installer_path: null,
   timed_out: false,
 };
+let runtimeLocation: RuntimeLocation = {
+  from_dmg_volume: false,
+  from_applications: true,
+  exe_path: "",
+};
 let setupStartedAt: number | null = null;
 let connectingStartedAt: number | null = null;
 let forceNotConnected = false;
 
 type DealerView =
+  | { kind: "dmg_gate"; subtitle: string }
   | { kind: "starting"; subtitle: string }
   | { kind: "setup"; subtitle: string; progress?: number }
   | {
       kind: "updating";
       subtitle: string;
       progress?: number;
-      /** Download in progress vs installer open / stalled (finishable). */
       mode: "downloading" | "ready" | "stalled";
     }
   | { kind: "connecting"; subtitle: string }
-  | { kind: "not_connected"; subtitle: string; cta: "connect" | "open_facebook" | "retry" }
+  | { kind: "not_connected"; subtitle: string; cta: "open_facebook" | "retry" | "wait" }
   | { kind: "connected"; subtitle: string };
 
 function isFacebookLoggedIn(browser: BrowserManagerSnapshot, runtime: RuntimeStatus): boolean {
@@ -175,10 +186,19 @@ function computeDealerView(
   browser: BrowserManagerSnapshot,
   runtime: RuntimeStatus,
 ): DealerView {
+  // Running from the DMG mount — show once, never download another update.
+  if (runtimeLocation.from_dmg_volume) {
+    return {
+      kind: "dmg_gate",
+      subtitle: "Drag this app to Applications, then open it from there.",
+    };
+  }
+
+  // Only show update UI when an update is actually active / finishable.
+  // Never paint Updating for idle/checking when already on latest.
   if (
     updateState.active ||
     isUpdateFinishablePhase(updateState.phase) ||
-    updateState.phase === "checking" ||
     updateState.phase === "downloading"
   ) {
     const stalled =
@@ -189,15 +209,13 @@ function computeDealerView(
       (stalled
         ? "Still on the old version. Finish installing, or open the installer again."
         : ready
-          ? "Installer open — drag to Applications, then reopen from Applications."
+          ? "Installer open — drag to Applications, then open it from Applications."
           : "Updating…");
     return {
       kind: "updating",
       subtitle,
       progress:
-        updateState.phase === "downloading" || updateState.phase === "checking"
-          ? updateState.progress
-          : undefined,
+        updateState.phase === "downloading" ? updateState.progress : undefined,
       mode: stalled ? "stalled" : ready ? "ready" : "downloading",
     };
   }
@@ -220,7 +238,6 @@ function computeDealerView(
         subtitle: "Starting up…",
       };
     }
-    // Timed out — fall through to Not connected (never Force Quit).
     forceNotConnected = true;
     if (!actionError) {
       actionError =
@@ -231,7 +248,7 @@ function computeDealerView(
     setupStartedAt = null;
   }
 
-  // Auto-pair in progress from dashboard Connect deep link — never show a code.
+  // Auto-pair in progress from dashboard Connect — never show a pairing code.
   if (
     !forceNotConnected &&
     !status.paired &&
@@ -259,7 +276,7 @@ function computeDealerView(
       subtitle:
         status.deep_link_message ??
         "Click Connect in MLT on the web to link this computer. Keep this app open.",
-      cta: "connect",
+      cta: "wait",
     };
   }
 
@@ -305,27 +322,21 @@ function render(
   const view = computeDealerView(status, pairing, browser, runtime);
   const busy = Boolean(actionInProgress);
   const connected = view.kind === "connected";
-  const primaryLabel =
-    view.kind === "not_connected"
-      ? view.cta === "open_facebook"
-        ? "Open Facebook"
-        : view.cta === "retry"
-          ? "Try again"
-          : "Waiting for Connect…"
-      : "Open Facebook";
 
   const statusTitle =
     view.kind === "connected"
       ? "Connected"
-      : view.kind === "updating"
-        ? view.mode === "ready" || view.mode === "stalled"
-          ? "Installer open"
-          : "Updating…"
-        : view.kind === "connecting"
-          ? "Connecting…"
-          : view.kind === "setup" || view.kind === "starting"
-            ? "Setting up…"
-            : "Not connected";
+      : view.kind === "dmg_gate"
+        ? "Finish installing"
+        : view.kind === "updating"
+          ? view.mode === "ready" || view.mode === "stalled"
+            ? "Installer open"
+            : "Updating…"
+          : view.kind === "connecting"
+            ? "Connecting…"
+            : view.kind === "setup" || view.kind === "starting"
+              ? "Setting up…"
+              : "Not connected";
 
   const updateActions =
     view.kind === "updating" && (view.mode === "ready" || view.mode === "stalled")
@@ -339,6 +350,27 @@ function render(
       : view.kind === "updating"
         ? `<button class="dealer-primary" disabled>Updating…</button>`
         : "";
+
+  const primaryActions =
+    view.kind === "dmg_gate"
+      ? `<button id="quit-dmg" class="dealer-primary">Quit</button>`
+      : view.kind === "updating"
+        ? updateActions
+        : view.kind === "connected"
+          ? `<button id="primary-cta" class="dealer-primary" ${busy ? "disabled" : ""}>Open Facebook</button>`
+          : view.kind === "setup" ||
+              view.kind === "starting" ||
+              view.kind === "connecting"
+            ? `<button class="dealer-primary" disabled>${
+                view.kind === "connecting" ? "Connecting…" : "Please wait…"
+              }</button>`
+            : view.kind === "not_connected" && view.cta === "open_facebook"
+              ? `<button id="primary-cta" class="dealer-primary" ${busy ? "disabled" : ""}>${
+                  busy ? "Working…" : "Open Facebook"
+                }</button>`
+              : view.kind === "not_connected" && view.cta === "retry"
+                ? `<button id="primary-cta" class="dealer-primary" ${busy ? "disabled" : ""}>Try again</button>`
+                : `<button class="dealer-primary" disabled>Waiting for Connect…</button>`;
 
   app.innerHTML = `
     <main class="dealer-shell">
@@ -370,28 +402,16 @@ function render(
       }
 
       <div class="dealer-actions">
-        ${
-          view.kind === "updating"
-            ? updateActions
-            : view.kind === "connected"
-              ? `<button id="primary-cta" class="dealer-primary" ${busy ? "disabled" : ""}>Open Facebook</button>`
-              : view.kind === "setup" ||
-                  view.kind === "starting" ||
-                  view.kind === "connecting"
-                ? `<button class="dealer-primary" disabled>${
-                    view.kind === "connecting" ? "Connecting…" : "Please wait…"
-                  }</button>`
-                : `<button id="primary-cta" class="dealer-primary" ${busy ? "disabled" : ""}>${
-                    busy ? "Working…" : primaryLabel
-                  }</button>`
-        }
+        ${primaryActions}
       </div>
 
       <p class="dealer-footnote">
         ${
-          view.kind === "updating" && (view.mode === "ready" || view.mode === "stalled")
-            ? "Use the installer window to drag the app into Applications, then click the button above."
-            : "You can close this window — the connector stays in your menu bar."
+          view.kind === "dmg_gate"
+            ? "Do not download another copy. Quit this window, then open the app from Applications."
+            : view.kind === "updating" && (view.mode === "ready" || view.mode === "stalled")
+              ? "Use the installer window to drag the app into Applications, then click I’ve finished installing."
+              : "You can close this window — the connector stays in your menu bar."
         }
       </p>
 
@@ -403,10 +423,10 @@ function render(
     </main>
   `;
 
-  bindActions(view, status);
+  bindActions(view);
 }
 
-function bindActions(view: DealerView, _status: ConnectorStatus) {
+function bindActions(view: DealerView) {
   document.querySelector("details.dealer-about")?.addEventListener("toggle", (e) => {
     showAbout = (e.target as HTMLDetailsElement).open;
   });
@@ -414,6 +434,7 @@ function bindActions(view: DealerView, _status: ConnectorStatus) {
   document.querySelector("#finish-install")?.addEventListener("click", () => void finishInstall());
   document.querySelector("#reopen-installer")?.addEventListener("click", () => void reopenInstaller());
   document.querySelector("#retry-update")?.addEventListener("click", () => void retryUpdate());
+  document.querySelector("#quit-dmg")?.addEventListener("click", () => void quitApp());
   document.querySelector("#primary-cta")?.addEventListener("click", () => {
     if (view.kind === "connected") {
       void openFacebookLogin();
@@ -430,12 +451,7 @@ function bindActions(view: DealerView, _status: ConnectorStatus) {
       connectingStartedAt = null;
       actionError = null;
       void refresh();
-      return;
     }
-    // Not paired — dealers never enter a code; pairing happens via MLT Connect deep link.
-    actionError =
-      "Open MLT in your browser, sign in, then click Connect. This app will link automatically.";
-    void refresh();
   });
 }
 
@@ -451,11 +467,19 @@ async function withAction(name: string, fn: () => Promise<void>) {
   }
 }
 
+async function quitApp() {
+  try {
+    await invoke("quit_app");
+  } catch (err) {
+    console.error(err);
+    window.close();
+  }
+}
+
 async function finishInstall() {
   await withAction("finish_install", async () => {
     try {
       await invoke("finish_update_install");
-      // Process should exit; if not, show guidance.
       actionError =
         "If the app didn’t reopen, open MLT Desktop Connector from Applications (not the installer window).";
     } catch (err) {
@@ -523,15 +547,18 @@ async function openLogFolder() {
 
 async function refresh() {
   try {
-    const [status, pairing, browser, runtime, provision, update] = await Promise.all([
-      invoke<ConnectorStatus>("get_status"),
-      invoke<PairingState>("get_pairing_state"),
-      invoke<BrowserManagerSnapshot>("get_browser_status"),
-      invoke<RuntimeStatus>("runtime_status"),
-      invoke<ChromiumProvisionState>("get_chromium_provision_state"),
-      invoke<UpdateUiState>("get_update_state"),
-    ]);
+    const [status, pairing, browser, runtime, provision, update, location] =
+      await Promise.all([
+        invoke<ConnectorStatus>("get_status"),
+        invoke<PairingState>("get_pairing_state"),
+        invoke<BrowserManagerSnapshot>("get_browser_status"),
+        invoke<RuntimeStatus>("runtime_status"),
+        invoke<ChromiumProvisionState>("get_chromium_provision_state"),
+        invoke<UpdateUiState>("get_update_state"),
+        invoke<RuntimeLocation>("get_runtime_location"),
+      ]);
     chromiumProvision = provision;
+    runtimeLocation = location;
     updateState = {
       ...update,
       installer_path: update.installer_path ?? null,

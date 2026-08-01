@@ -18,6 +18,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 use tracing::{info, warn};
 
+use crate::install_location::{is_running_from_applications, is_running_from_dmg_volume};
 use crate::version::CONNECTOR_VERSION;
 
 const GITHUB_LATEST_API: &str =
@@ -175,17 +176,28 @@ impl UpdaterService {
 
     async fn run_check(self: &Arc<Self>, app: &AppHandle, force_ui: bool) -> Result<(), String> {
         self.bump_stall_generation();
-        self.set_phase(
-            app,
-            UpdatePhase::Checking,
-            "Checking for updates…",
-            None,
-            5,
-            force_ui,
-            None,
-            false,
-        );
 
+        // Kill the DMG loop: never download/update while running from a mounted volume.
+        if is_running_from_dmg_volume() {
+            info!(
+                local = CONNECTOR_VERSION,
+                "updater: skipping — running from DMG volume (not Applications)"
+            );
+            self.clear_to_idle(app, None);
+            return Ok(());
+        }
+
+        // Auto-update only from a real Applications install (never Downloads/tmp copies).
+        if !is_running_from_applications() {
+            info!(
+                local = CONNECTOR_VERSION,
+                "updater: skipping — not running from Applications"
+            );
+            self.clear_to_idle(app, None);
+            return Ok(());
+        }
+
+        // Silent check first — do NOT paint “Updating…” until we know remote > local.
         let release = fetch_latest_release().await?;
         let remote_version = normalize_version(&release.tag_name);
         if remote_version.is_empty() {
@@ -196,7 +208,7 @@ impl UpdaterService {
             info!(
                 local = CONNECTOR_VERSION,
                 remote = %remote_version,
-                "updater: already up to date"
+                "updater: already up to date — never show Updating"
             );
             self.clear_to_idle(app, force_ui.then_some("You’re up to date."));
             return Ok(());
@@ -205,6 +217,20 @@ impl UpdaterService {
         let asset = select_platform_asset(&release.assets).ok_or_else(|| {
             format!("Update {remote_version} is available, but no installer for this computer was found.")
         })?;
+
+        // Guard: asset filename must advertise a version > local (avoids same-version re-download).
+        if let Some(asset_ver) = version_from_asset_name(&asset.name) {
+            if !is_newer_version(&asset_ver, CONNECTOR_VERSION) {
+                info!(
+                    local = CONNECTOR_VERSION,
+                    asset = %asset.name,
+                    asset_ver = %asset_ver,
+                    "updater: asset is not newer — skipping download"
+                );
+                self.clear_to_idle(app, force_ui.then_some("You’re up to date."));
+                return Ok(());
+            }
+        }
 
         info!(
             local = CONNECTOR_VERSION,
@@ -241,7 +267,6 @@ impl UpdaterService {
             Some(dest.display().to_string()),
             false,
         );
-        // Keep our window visible with finishable CTA — do not leave “Updating…” disabled.
         focus_main_window(app);
         self.spawn_install_stall_timer(app.clone());
         Ok(())
@@ -592,10 +617,10 @@ pub fn normalize_version(raw: &str) -> String {
     raw.trim().trim_start_matches('v').trim().to_string()
 }
 
-/// Parse `major.minor.patch` (ignores pre-release suffix after `-`).
+/// Parse `major.minor.patch` (ignores pre-release / build metadata after `-` or `+`).
 pub fn parse_semver(raw: &str) -> Option<(u64, u64, u64)> {
     let core = normalize_version(raw);
-    let core = core.split('-').next().unwrap_or(&core);
+    let core = core.split(|c| c == '-' || c == '+').next().unwrap_or(&core);
     let mut parts = core.split('.');
     let major = parts.next()?.parse().ok()?;
     let minor = parts.next()?.parse().ok()?;
@@ -603,11 +628,25 @@ pub fn parse_semver(raw: &str) -> Option<(u64, u64, u64)> {
     Some((major, minor, patch))
 }
 
+/// True only when remote is a strict semver greater than local.
+/// Equal versions, parse failures, and prereleases that don't parse → false (never update).
 pub fn is_newer_version(remote: &str, local: &str) -> bool {
     match (parse_semver(remote), parse_semver(local)) {
         (Some(r), Some(l)) => r > l,
         _ => false,
     }
+}
+
+/// Pull `1.2.3` from names like `MLT.Desktop.Connector_1.1.0_aarch64.dmg`.
+pub fn version_from_asset_name(name: &str) -> Option<String> {
+    let re_parts: Vec<&str> = name.split(['_', '-', ' ']).collect();
+    for part in re_parts {
+        let candidate = normalize_version(part);
+        if parse_semver(&candidate).is_some() && candidate.contains('.') {
+            return Some(candidate);
+        }
+    }
+    None
 }
 
 pub fn select_platform_asset(assets: &[GhAsset]) -> Option<GhAsset> {
@@ -701,6 +740,21 @@ mod tests {
         assert!(is_newer_version("v1.1.0", "1.0.9"));
         assert!(!is_newer_version("1.0.5", "1.0.5"));
         assert!(!is_newer_version("1.0.4", "1.0.5"));
+        assert!(!is_newer_version("1.1.0", "1.1.0"));
+        assert!(!is_newer_version("v1.1.0", "1.1.0"));
+        assert!(!is_newer_version("not-a-version", "1.0.0"));
+    }
+
+    #[test]
+    fn asset_name_version() {
+        assert_eq!(
+            version_from_asset_name("MLT.Desktop.Connector_1.1.0_aarch64.dmg").as_deref(),
+            Some("1.1.0")
+        );
+        assert_eq!(
+            version_from_asset_name("MLT.Desktop.Connector_1.0.9_x64.dmg").as_deref(),
+            Some("1.0.9")
+        );
     }
 
     #[test]
