@@ -182,10 +182,39 @@ fn browser_open_marketplace(
 }
 
 #[tauri::command]
-fn browser_open_facebook_login(
+async fn browser_open_facebook_login(
+    app: tauri::AppHandle,
     services: tauri::State<'_, AppServices>,
 ) -> Result<BrowserManagerSnapshot, String> {
-    services.facebook_runtime.open_facebook_login()
+    // Repair path: provision Chromium if missing, restart sticky-failed sidecar, then open FB.
+    services
+        .chromium_provision
+        .ensure_ready(app.clone())
+        .await
+        .map_err(|msg| {
+            if msg.contains("CHROMIUM") || msg.contains("Chromium") || msg.contains("browser") {
+                msg
+            } else {
+                format!("Couldn’t prepare the Facebook browser. {msg}")
+            }
+        })?;
+
+    let manager = services.browser_manager.clone();
+    let recover = tauri::async_runtime::spawn_blocking(move || manager.recover_runtime());
+    match recover.await {
+        Ok(Ok(_)) => {}
+        Ok(Err(err)) if err == "CHROMIUM_NOT_INSTALLED" => {
+            // Rare race: detect flipped after ensure_ready — one more provision attempt.
+            services.chromium_provision.ensure_ready(app.clone()).await?;
+            services.browser_manager.recover_runtime()?;
+        }
+        Ok(Err(err)) => return Err(err),
+        Err(err) => return Err(format!("Browser recovery failed: {err}")),
+    }
+
+    let opened = services.facebook_runtime.open_facebook_login()?;
+    services.heartbeat.trigger_now();
+    Ok(opened)
 }
 
 #[tauri::command]
@@ -501,9 +530,13 @@ pub fn run() {
                 state.clone(),
                 api_client.clone(),
                 polling.clone(),
+                heartbeat.clone(),
             ));
 
             let updater = UpdaterService::new();
+
+            let chromium_provision =
+                Arc::new(ChromiumProvisionService::new(browser_runtime.clone()));
 
             let deep_link = Arc::new(DeepLinkCoordinator::new(
                 app.handle().clone(),
@@ -513,10 +546,8 @@ pub fn run() {
                 launch_sessions,
                 heartbeat.clone(),
                 updater.clone(),
+                chromium_provision.clone(),
             ));
-
-            let chromium_provision =
-                Arc::new(ChromiumProvisionService::new(browser_runtime.clone()));
 
             let browser_health =
                 BrowserHealthService::spawn(browser_manager.clone(), facebook_runtime.clone());

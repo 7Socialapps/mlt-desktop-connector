@@ -10,7 +10,9 @@ use crate::credentials::{self, CredentialStatus};
 use crate::launch_session::{LaunchSessionService, LaunchStatus};
 use crate::protocol::{parse_deep_link, DeepLinkRoute, ProtocolError};
 use crate::runtime::FacebookRuntime;
-use crate::services::{HeartbeatService, PairingCoordinator, UpdaterService};
+use crate::services::{
+    ChromiumProvisionService, HeartbeatService, PairingCoordinator, UpdaterService,
+};
 use crate::state::AppState;
 
 pub struct DeepLinkCoordinator {
@@ -21,6 +23,7 @@ pub struct DeepLinkCoordinator {
     launch_sessions: Arc<LaunchSessionService>,
     heartbeat: Arc<HeartbeatService>,
     updater: Arc<UpdaterService>,
+    chromium_provision: Arc<ChromiumProvisionService>,
     pending: Mutex<Vec<String>>,
 }
 
@@ -42,6 +45,7 @@ impl DeepLinkCoordinator {
         launch_sessions: Arc<LaunchSessionService>,
         heartbeat: Arc<HeartbeatService>,
         updater: Arc<UpdaterService>,
+        chromium_provision: Arc<ChromiumProvisionService>,
     ) -> Self {
         Self {
             app,
@@ -51,6 +55,7 @@ impl DeepLinkCoordinator {
             launch_sessions,
             heartbeat,
             updater,
+            chromium_provision,
             pending: Mutex::new(Vec::new()),
         }
     }
@@ -195,6 +200,16 @@ impl DeepLinkCoordinator {
         }
 
         if !self.ensure_paired_for_browser("connecting Facebook").await {
+            return;
+        }
+
+        if let Err(err) = self.prepare_managed_browser().await {
+            warn!(error = %err, "browser prepare failed during connect-facebook");
+            self.set_message(err.clone());
+            self.set_launch_status(LaunchStatus::Error);
+            if let Some(session_id) = &session {
+                self.ack_session(session_id, "error", Some(err)).await;
+            }
             return;
         }
 
@@ -353,6 +368,16 @@ impl DeepLinkCoordinator {
                     Some("Pair this device before opening Messenger".into()),
                 )
                 .await;
+            }
+            return;
+        }
+
+        if let Err(err) = self.prepare_managed_browser().await {
+            warn!(error = %err, "browser prepare failed during open-messenger");
+            self.set_message(err.clone());
+            self.set_launch_status(LaunchStatus::Error);
+            if let Some(session_id) = &session {
+                self.ack_session(session_id, "error", Some(err)).await;
             }
             return;
         }
@@ -549,6 +574,28 @@ impl DeepLinkCoordinator {
         true
     }
 
+    /// Download Chromium if needed and recover a sticky-failed sidecar before launch.
+    async fn prepare_managed_browser(&self) -> Result<(), String> {
+        self.set_message("Preparing Facebook browser…".into());
+        self.chromium_provision
+            .ensure_ready(self.app.clone())
+            .await?;
+        let manager = self.facebook_runtime.bus.browser_manager();
+        let mgr = manager.clone();
+        let recover = tauri::async_runtime::spawn_blocking(move || mgr.recover_runtime());
+        match recover.await {
+            Ok(Ok(_)) => Ok(()),
+            Ok(Err(err)) if err == "CHROMIUM_NOT_INSTALLED" => {
+                self.chromium_provision
+                    .ensure_ready(self.app.clone())
+                    .await?;
+                manager.recover_runtime().map(|_| ())
+            }
+            Ok(Err(err)) => Err(err),
+            Err(err) => Err(format!("Browser recovery failed: {err}")),
+        }
+    }
+
     async fn handle_open_marketplace(&self) {
         self.set_message("Opening Facebook Marketplace…".into());
         if let Err(err) = self.facebook_runtime.launch_browser() {
@@ -612,6 +659,7 @@ impl DeepLinkCoordinator {
             launch_sessions: self.launch_sessions.clone(),
             heartbeat: self.heartbeat.clone(),
             updater: self.updater.clone(),
+            chromium_provision: self.chromium_provision.clone(),
         }
     }
 }
@@ -624,6 +672,7 @@ struct DeepLinkHandle {
     launch_sessions: Arc<LaunchSessionService>,
     heartbeat: Arc<HeartbeatService>,
     updater: Arc<UpdaterService>,
+    chromium_provision: Arc<ChromiumProvisionService>,
 }
 
 impl DeepLinkHandle {
@@ -636,6 +685,7 @@ impl DeepLinkHandle {
             launch_sessions: self.launch_sessions.clone(),
             heartbeat: self.heartbeat.clone(),
             updater: self.updater.clone(),
+            chromium_provision: self.chromium_provision.clone(),
             pending: Mutex::new(Vec::new()),
         };
         coordinator.handle_url(raw_url).await;

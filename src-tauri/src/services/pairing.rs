@@ -10,7 +10,7 @@ use crate::api::types::{ConnectorOs, PairFromLaunchSessionRequest, PollPairingSe
 use crate::api::ConnectorApiClient;
 use crate::credentials::{has_access_token, store_credentials, StoredCredentials};
 use crate::state::{AppState, ConnectionState};
-use crate::services::PollingService;
+use crate::services::{HeartbeatService, PollingService};
 use crate::version::{CONNECTOR_VERSION, DEFAULT_CAPABILITIES};
 
 const PAIRING_POLL_INTERVAL: Duration = Duration::from_secs(2);
@@ -30,6 +30,7 @@ pub struct PairingCoordinator {
     state: Arc<Mutex<AppState>>,
     client: Arc<ConnectorApiClient>,
     polling: Arc<PollingService>,
+    heartbeat: Arc<HeartbeatService>,
     ui: Arc<Mutex<PairingUiState>>,
 }
 
@@ -39,12 +40,14 @@ impl PairingCoordinator {
         state: Arc<Mutex<AppState>>,
         client: Arc<ConnectorApiClient>,
         polling: Arc<PollingService>,
+        heartbeat: Arc<HeartbeatService>,
     ) -> Self {
         Self {
             app,
             state,
             client,
             polling,
+            heartbeat,
             ui: Arc::new(Mutex::new(PairingUiState {
                 active: false,
                 pairing_code: None,
@@ -159,6 +162,8 @@ impl PairingCoordinator {
         self.state.lock().needs_reconnect = false;
         self.state.lock().connection_state = ConnectionState::Idle;
         self.polling.set_enabled(true);
+        // Clear dashboard "offline" ASAP — don't wait for the 15s heartbeat tick.
+        self.heartbeat.trigger_now();
 
         {
             let mut ui = self.ui.lock();
@@ -319,6 +324,7 @@ impl PairingCoordinator {
                             self.state.lock().needs_reconnect = false;
                             self.state.lock().connection_state = ConnectionState::Idle;
                             self.polling.set_enabled(true);
+                            self.heartbeat.trigger_now();
                             {
                                 let mut ui = self.ui.lock();
                                 ui.active = false;
@@ -365,6 +371,7 @@ impl PairingCoordinator {
             state: self.state.clone(),
             client: self.client.clone(),
             polling: self.polling.clone(),
+            heartbeat: self.heartbeat.clone(),
             ui: self.ui.clone(),
         }
     }

@@ -46,6 +46,71 @@ impl ChromiumProvisionService {
         self.state.lock().clone()
     }
 
+    /// Ensure Chromium is installed (dealer Open Facebook / Connect path).
+    /// Returns Ok when ready; Err with a short dealer-facing message otherwise.
+    pub async fn ensure_ready(self: &Arc<Self>, app: AppHandle) -> Result<(), String> {
+        // If a first-run install is already running, wait for it (capped).
+        if self.state.lock().active {
+            let deadline = tokio::time::Instant::now() + ACTIVE_UI_CAP;
+            while self.state.lock().active && tokio::time::Instant::now() < deadline {
+                tokio::time::sleep(Duration::from_millis(400)).await;
+            }
+        }
+
+        let runtime = self.runtime.clone();
+        let detect = tauri::async_runtime::spawn_blocking(move || runtime.detect());
+        let snap = match tokio::time::timeout(Duration::from_secs(15), detect).await {
+            Ok(Ok(Ok(s))) => s,
+            Ok(Ok(Err(err))) => {
+                return Err(format!("Couldn’t check the Facebook browser: {err}"));
+            }
+            Ok(Err(err)) => {
+                return Err(format!("Couldn’t check the Facebook browser: {err}"));
+            }
+            Err(_) => {
+                return Err("Checking the Facebook browser timed out. Try Open Facebook again.".into());
+            }
+        };
+
+        if !snap.enabled {
+            return Err("Facebook helper is turned off on this computer. Contact support.".into());
+        }
+        if snap.chromium_installed {
+            {
+                let mut guard = self.state.lock();
+                guard.active = false;
+                guard.error = None;
+                guard.message = "Chromium is ready.".into();
+                guard.progress = 100;
+            }
+            emit(&app, self.snapshot());
+            return Ok(());
+        }
+        if !snap.playwright_installed {
+            let msg = "Browser components are missing from this install. Quit and reinstall the latest Desktop Connector.".to_string();
+            self.fail(&app, msg.clone());
+            return Err(msg);
+        }
+
+        self.run_install(app.clone()).await;
+
+        let after = self.runtime.detect().unwrap_or_else(|_| self.runtime.snapshot());
+        if after.chromium_installed {
+            Ok(())
+        } else {
+            let msg = self
+                .state
+                .lock()
+                .error
+                .clone()
+                .unwrap_or_else(|| {
+                    "Couldn’t download the Facebook browser. Check your network, then try Open Facebook again."
+                        .into()
+                });
+            Err(msg)
+        }
+    }
+
     pub fn start_if_needed(self: &Arc<Self>, app: AppHandle) {
         let runtime = self.runtime.clone();
         let svc = self.clone();
