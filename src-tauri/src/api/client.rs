@@ -384,6 +384,21 @@ impl ConnectorApiClient {
         )
         .await
     }
+
+    pub async fn acknowledge_launch_session(
+        &self,
+        request: AcknowledgeLaunchSessionRequest,
+        device_access_token: &str,
+    ) -> Result<AcknowledgeLaunchSessionResponse, ApiClientError> {
+        self.post(
+            &request,
+            &AuthHeaders {
+                device_access_token: Some(device_access_token.to_string()),
+                ..AuthHeaders::default()
+            },
+        )
+        .await
+    }
 }
 
 impl Default for AuthHeaders {

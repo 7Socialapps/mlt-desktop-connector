@@ -6,7 +6,10 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tracing::warn;
 
-use crate::api::types::{RedeemLaunchSessionRequest, RedeemLaunchSessionResponse};
+use crate::api::types::{
+    AcknowledgeLaunchSessionRequest, AcknowledgeLaunchSessionResponse, RedeemLaunchSessionRequest,
+    RedeemLaunchSessionResponse,
+};
 use crate::api::ConnectorApiClient;
 use crate::credentials::{ensure_access_token, is_paired, load_credentials};
 
@@ -20,6 +23,7 @@ pub enum LaunchStatus {
     FacebookLoggedIn,
     FacebookLoginRequired,
     MarketplaceReady,
+    MessengerReady,
     PairingRequired,
     DeviceRevoked,
     Error,
@@ -35,6 +39,7 @@ impl LaunchStatus {
             Self::FacebookLoggedIn => "facebook_logged_in",
             Self::FacebookLoginRequired => "facebook_login_required",
             Self::MarketplaceReady => "marketplace_ready",
+            Self::MessengerReady => "messenger_ready",
             Self::PairingRequired => "pairing_required",
             Self::DeviceRevoked => "device_revoked",
             Self::Error => "error",
@@ -138,6 +143,61 @@ impl LaunchSessionService {
                 }
                 Err(LaunchSessionError::Backend(msg))
             }
+        }
+    }
+
+    /// Report progressive ack to the dashboard (`launching` | `ready` | `error`).
+    pub async fn acknowledge(
+        &self,
+        session_id: &str,
+        device_id: &str,
+        state: &str,
+        message: Option<String>,
+    ) -> Result<AcknowledgeLaunchSessionResponse, LaunchSessionError> {
+        if session_id.trim().is_empty() || session_id.len() > 128 {
+            return Err(LaunchSessionError::InvalidSessionId);
+        }
+        if !matches!(state, "launching" | "ready" | "error") {
+            return Err(LaunchSessionError::Other(format!(
+                "invalid ack state: {state}"
+            )));
+        }
+        if !is_paired() {
+            return Err(LaunchSessionError::NotPaired);
+        }
+
+        let _ = ensure_access_token(&self.client)
+            .await
+            .map_err(|e| LaunchSessionError::Other(e.to_string()))?;
+
+        let creds = load_credentials()
+            .map_err(|e| LaunchSessionError::Other(e.to_string()))?
+            .ok_or(LaunchSessionError::NotPaired)?;
+
+        if creds.access_token.is_empty() {
+            return Err(LaunchSessionError::NotPaired);
+        }
+
+        let request = AcknowledgeLaunchSessionRequest {
+            action: "acknowledge_launch_session".into(),
+            session_id: session_id.to_string(),
+            device_id: device_id.to_string(),
+            state: state.to_string(),
+            message: message.map(|m| m.chars().take(300).collect()),
+        };
+
+        match self
+            .client
+            .acknowledge_launch_session(request, &creds.access_token)
+            .await
+        {
+            Ok(response) if response.ok => Ok(response),
+            Ok(response) => Err(LaunchSessionError::Backend(
+                response
+                    .error
+                    .unwrap_or_else(|| "Launch session acknowledge failed".into()),
+            )),
+            Err(err) => Err(LaunchSessionError::Backend(err.to_string())),
         }
     }
 }

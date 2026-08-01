@@ -208,6 +208,32 @@ pub struct RedeemLaunchSessionResponse {
     pub ok: bool,
     pub nonce: Option<String>,
     pub expires_at: Option<String>,
+    #[serde(default)]
+    pub intent: Option<String>,
+    #[serde(default)]
+    pub user_id: Option<String>,
+    #[serde(default)]
+    pub dealership_id: Option<String>,
+    pub error: Option<String>,
+    pub error_code: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcknowledgeLaunchSessionRequest {
+    pub action: String,
+    pub session_id: String,
+    pub device_id: String,
+    /// `launching` | `ready` | `error`
+    pub state: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcknowledgeLaunchSessionResponse {
+    pub ok: bool,
     pub error: Option<String>,
     pub error_code: Option<String>,
 }

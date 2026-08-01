@@ -7,6 +7,7 @@ use url::Url;
 pub enum DeepLinkRoute {
     Open,
     ConnectFacebook,
+    OpenMessenger,
     OpenMarketplace,
     OpenVehicleCreate,
     Pair,
@@ -35,6 +36,7 @@ pub enum ProtocolError {
 const ALLOWED_ROUTES: &[(&str, DeepLinkRoute)] = &[
     ("open", DeepLinkRoute::Open),
     ("connect-facebook", DeepLinkRoute::ConnectFacebook),
+    ("open-messenger", DeepLinkRoute::OpenMessenger),
     ("open-marketplace", DeepLinkRoute::OpenMarketplace),
     ("open-vehicle-create", DeepLinkRoute::OpenVehicleCreate),
     ("pair", DeepLinkRoute::Pair),
@@ -173,5 +175,16 @@ mod tests {
     fn parses_host_style_routes() {
         let parsed = parse_deep_link("mlt-desktop://open-marketplace").expect("marketplace");
         assert_eq!(parsed.route, DeepLinkRoute::OpenMarketplace);
+    }
+
+    #[test]
+    fn parses_open_messenger_with_session() {
+        let parsed =
+            parse_deep_link("mlt-desktop://open-messenger?session=abc-123_XYZ").expect("messenger");
+        assert_eq!(parsed.route, DeepLinkRoute::OpenMessenger);
+        assert_eq!(
+            parsed.query.get("session"),
+            Some(&"abc-123_XYZ".to_string())
+        );
     }
 }

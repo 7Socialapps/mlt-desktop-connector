@@ -103,6 +103,10 @@ impl DeepLinkCoordinator {
                         self.handle_connect_facebook(parsed.query.get("session").cloned())
                             .await;
                     }
+                    DeepLinkRoute::OpenMessenger => {
+                        self.handle_open_messenger(parsed.query.get("session").cloned())
+                            .await;
+                    }
                     DeepLinkRoute::OpenMarketplace => self.handle_open_marketplace().await,
                     DeepLinkRoute::OpenVehicleCreate => self.handle_open_vehicle_create().await,
                     DeepLinkRoute::Pair => {
@@ -155,50 +159,13 @@ impl DeepLinkCoordinator {
         self.set_message("Facebook connection requested from MLT Dashboard".into());
         self.set_launch_status(LaunchStatus::AppOpened);
 
-        if let Some(session_id) = session.clone() {
-            self.state.lock().launch_session_id = Some(session_id.clone());
-            let device_id = self.state.lock().device_id.to_string();
-            match self
-                .launch_sessions
-                .redeem(&session_id, &device_id)
-                .await
-            {
-                Ok(_) => self.set_launch_status(LaunchStatus::LaunchSessionRedeemed),
-                Err(crate::launch_session::LaunchSessionError::NotPaired) => {
-                    self.set_message(
-                        "Pair this device first, then try Connect Facebook again.".into(),
-                    );
-                    self.set_launch_status(LaunchStatus::PairingRequired);
-                    let device_id = self.state.lock().device_id.to_string();
-                    let _ = self.pairing.start(device_id, None).await;
-                    return;
-                }
-                Err(crate::launch_session::LaunchSessionError::AlreadyRedeemed) => {
-                    self.set_message("This dashboard link was already used.".into());
-                    self.set_launch_status(LaunchStatus::LaunchSessionRejected);
-                    return;
-                }
-                Err(err) => {
-                    warn!(error = %err, "launch session redemption failed");
-                    self.set_message(format!("Could not verify dashboard link: {err}"));
-                    self.set_launch_status(LaunchStatus::LaunchSessionRejected);
-                }
+        if let Some(session_id) = &session {
+            if !self.redeem_session(session_id, "Connect Facebook").await {
+                return;
             }
         }
 
-        if credentials::credential_status() == CredentialStatus::NeedsReconnect {
-            self.set_message(
-                "This device was revoked. Pair again from the MLT Dashboard.".into(),
-            );
-            self.set_launch_status(LaunchStatus::DeviceRevoked);
-            return;
-        }
-
-        if !credentials::is_paired() {
-            self.set_message("Pair this device before connecting Facebook.".into());
-            self.set_launch_status(LaunchStatus::PairingRequired);
-            let device_id = self.state.lock().device_id.to_string();
-            let _ = self.pairing.start(device_id, None).await;
+        if !self.ensure_paired_for_browser("connecting Facebook").await {
             return;
         }
 
@@ -206,9 +173,17 @@ impl DeepLinkCoordinator {
             warn!(error = %err, "browser launch failed during connect-facebook");
             self.set_message(format!("Browser could not start: {err}"));
             self.set_launch_status(LaunchStatus::Error);
+            if let Some(session_id) = &session {
+                self.ack_session(session_id, "error", Some(format!("Browser could not start: {err}")))
+                    .await;
+            }
             return;
         }
         self.set_launch_status(LaunchStatus::BrowserReady);
+        if let Some(session_id) = &session {
+            self.ack_session(session_id, "launching", Some("Browser ready".into()))
+                .await;
+        }
 
         let session_snap = self.facebook_runtime.session.snapshot();
         match session_snap.state {
@@ -219,6 +194,14 @@ impl DeepLinkCoordinator {
                     self.set_message(format!(
                         "Signed in to Facebook. Marketplace check: {err}"
                     ));
+                    if let Some(session_id) = &session {
+                        self.ack_session(
+                            session_id,
+                            "ready",
+                            Some("Signed in; finish Marketplace prompts in the browser.".into()),
+                        )
+                        .await;
+                    }
                 } else {
                     let mp = self.facebook_runtime.marketplace.snapshot();
                     if mp.status == MarketplaceStatus::MarketplaceReady {
@@ -227,11 +210,27 @@ impl DeepLinkCoordinator {
                             "Facebook and Marketplace are ready. You can post from the dashboard."
                                 .into(),
                         );
+                        if let Some(session_id) = &session {
+                            self.ack_session(
+                                session_id,
+                                "ready",
+                                Some("Facebook and Marketplace ready".into()),
+                            )
+                            .await;
+                        }
                     } else {
                         self.set_message(
                             "Signed in to Facebook. Finish any Marketplace prompts in the browser."
                                 .into(),
                         );
+                        if let Some(session_id) = &session {
+                            self.ack_session(
+                                session_id,
+                                "ready",
+                                Some("Signed in; finish Marketplace prompts.".into()),
+                            )
+                            .await;
+                        }
                     }
                 }
             }
@@ -249,6 +248,14 @@ impl DeepLinkCoordinator {
                             .into(),
                     );
                 }
+                if let Some(session_id) = &session {
+                    self.ack_session(
+                        session_id,
+                        "launching",
+                        Some("Sign into Facebook in the Connector browser".into()),
+                    )
+                    .await;
+                }
             }
             _ => {
                 self.set_launch_status(LaunchStatus::FacebookLoginRequired);
@@ -259,8 +266,196 @@ impl DeepLinkCoordinator {
                         .to_string(),
                 );
                 let _ = self.facebook_runtime.open_facebook_login();
+                if let Some(session_id) = &session {
+                    self.ack_session(
+                        session_id,
+                        "launching",
+                        Some("Sign into Facebook in the Connector browser".into()),
+                    )
+                    .await;
+                }
             }
         }
+    }
+
+    /// Leads "Start monitoring" → redeem launch session, open Messenger, heartbeat ready.
+    async fn handle_open_messenger(&self, session: Option<String>) {
+        self.set_message("Opening Messenger for Leads monitoring…".into());
+        self.set_launch_status(LaunchStatus::AppOpened);
+
+        if let Some(session_id) = &session {
+            if !self.redeem_session(session_id, "Start monitoring").await {
+                return;
+            }
+            self.ack_session(
+                session_id,
+                "launching",
+                Some("Opening Messenger in Desktop Connector".into()),
+            )
+            .await;
+        }
+
+        if !self.ensure_paired_for_browser("opening Messenger").await {
+            if let Some(session_id) = &session {
+                self.ack_session(
+                    session_id,
+                    "error",
+                    Some("Pair this device before opening Messenger".into()),
+                )
+                .await;
+            }
+            return;
+        }
+
+        if let Err(err) = self.facebook_runtime.launch_browser() {
+            warn!(error = %err, "browser launch failed during open-messenger");
+            self.set_message(format!("Browser could not start: {err}"));
+            self.set_launch_status(LaunchStatus::Error);
+            if let Some(session_id) = &session {
+                self.ack_session(session_id, "error", Some(format!("Browser could not start: {err}")))
+                    .await;
+            }
+            return;
+        }
+        self.set_launch_status(LaunchStatus::BrowserReady);
+
+        let session_snap = self.facebook_runtime.session.snapshot();
+        if !matches!(session_snap.state, FacebookSessionState::FacebookLoggedIn) {
+            self.set_launch_status(LaunchStatus::FacebookLoginRequired);
+            let _ = self.facebook_runtime.open_facebook_login();
+            self.set_message(
+                "Sign into Facebook in the Connector browser, then Start monitoring again."
+                    .into(),
+            );
+            if let Some(session_id) = &session {
+                self.ack_session(
+                    session_id,
+                    "error",
+                    Some("Facebook login required before Messenger monitoring".into()),
+                )
+                .await;
+            }
+            return;
+        }
+
+        match self.facebook_runtime.messenger.open_messenger() {
+            Ok(snap) => {
+                use crate::runtime::MessengerState;
+                if snap.state == MessengerState::MessengerReady {
+                    self.set_launch_status(LaunchStatus::MessengerReady);
+                    self.set_message(
+                        "Messenger is open. Keep this window open while monitoring leads.".into(),
+                    );
+                    if let Some(session_id) = &session {
+                        self.ack_session(
+                            session_id,
+                            "ready",
+                            Some("Messenger open — monitoring active".into()),
+                        )
+                        .await;
+                    }
+                } else if snap.state == MessengerState::MessengerLoginRequired {
+                    self.set_launch_status(LaunchStatus::FacebookLoginRequired);
+                    self.set_message(
+                        "Sign into Facebook in the Connector browser, then try again.".into(),
+                    );
+                    if let Some(session_id) = &session {
+                        self.ack_session(
+                            session_id,
+                            "error",
+                            Some("Messenger requires Facebook login".into()),
+                        )
+                        .await;
+                    }
+                } else {
+                    self.set_launch_status(LaunchStatus::Error);
+                    let reason = snap
+                        .reason_code
+                        .unwrap_or_else(|| format!("{:?}", snap.state));
+                    self.set_message(format!("Messenger could not open ({reason})"));
+                    if let Some(session_id) = &session {
+                        self.ack_session(
+                            session_id,
+                            "error",
+                            Some(format!("Messenger unavailable: {reason}")),
+                        )
+                        .await;
+                    }
+                }
+            }
+            Err(err) => {
+                warn!(error = %err, "open_messenger failed");
+                self.set_message(format!("Could not open Messenger: {err}"));
+                self.set_launch_status(LaunchStatus::Error);
+                if let Some(session_id) = &session {
+                    self.ack_session(session_id, "error", Some(format!("Could not open Messenger: {err}")))
+                        .await;
+                }
+            }
+        }
+    }
+
+    /// Redeem dashboard launch session. Returns false when the flow should stop.
+    async fn redeem_session(&self, session_id: &str, action_label: &str) -> bool {
+        self.state.lock().launch_session_id = Some(session_id.to_string());
+        let device_id = self.state.lock().device_id.to_string();
+        match self.launch_sessions.redeem(session_id, &device_id).await {
+            Ok(_) => {
+                self.set_launch_status(LaunchStatus::LaunchSessionRedeemed);
+                true
+            }
+            Err(crate::launch_session::LaunchSessionError::NotPaired) => {
+                self.set_message(format!(
+                    "Pair this device first, then try {action_label} again."
+                ));
+                self.set_launch_status(LaunchStatus::PairingRequired);
+                let device_id = self.state.lock().device_id.to_string();
+                let _ = self.pairing.start(device_id, None).await;
+                false
+            }
+            Err(crate::launch_session::LaunchSessionError::AlreadyRedeemed) => {
+                self.set_message("This dashboard link was already used.".into());
+                self.set_launch_status(LaunchStatus::LaunchSessionRejected);
+                false
+            }
+            Err(err) => {
+                warn!(error = %err, "launch session redemption failed");
+                self.set_message(format!("Could not verify dashboard link: {err}"));
+                self.set_launch_status(LaunchStatus::LaunchSessionRejected);
+                // Still allow local open when backend redeem fails (dev / transient).
+                true
+            }
+        }
+    }
+
+    async fn ack_session(&self, session_id: &str, state: &str, message: Option<String>) {
+        let device_id = self.state.lock().device_id.to_string();
+        if let Err(err) = self
+            .launch_sessions
+            .acknowledge(session_id, &device_id, state, message)
+            .await
+        {
+            warn!(error = %err, session_id = %session_id, "launch session acknowledge failed");
+        }
+    }
+
+    async fn ensure_paired_for_browser(&self, purpose: &str) -> bool {
+        if credentials::credential_status() == CredentialStatus::NeedsReconnect {
+            self.set_message(
+                "This device was revoked. Pair again from the MLT Dashboard.".into(),
+            );
+            self.set_launch_status(LaunchStatus::DeviceRevoked);
+            return false;
+        }
+
+        if !credentials::is_paired() {
+            self.set_message(format!("Pair this device before {purpose}."));
+            self.set_launch_status(LaunchStatus::PairingRequired);
+            let device_id = self.state.lock().device_id.to_string();
+            let _ = self.pairing.start(device_id, None).await;
+            return false;
+        }
+        true
     }
 
     async fn handle_open_marketplace(&self) {
@@ -293,6 +488,7 @@ impl DeepLinkCoordinator {
         let label = match route {
             DeepLinkRoute::Open => "open",
             DeepLinkRoute::ConnectFacebook => "connect-facebook",
+            DeepLinkRoute::OpenMessenger => "open-messenger",
             DeepLinkRoute::OpenMarketplace => "open-marketplace",
             DeepLinkRoute::OpenVehicleCreate => "open-vehicle-create",
             DeepLinkRoute::Pair => "pair",

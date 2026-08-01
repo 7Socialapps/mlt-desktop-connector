@@ -10,6 +10,7 @@ Registered custom scheme: `mlt-desktop://`
 |---|---|---|
 | `open` | `mlt-desktop://open` | Focus connector window |
 | `connect-facebook` | `mlt-desktop://connect-facebook?session=<opaque-id>` | Redeem launch session, launch browser, guide Facebook login or verify Marketplace readiness |
+| `open-messenger` | `mlt-desktop://open-messenger?session=<opaque-id>` | Redeem launch session, open Facebook Messenger, ack `ready` / heartbeat `messenger_ready` |
 | `open-marketplace` | `mlt-desktop://open-marketplace` | Launch browser and open Marketplace |
 | `open-vehicle-create` | `mlt-desktop://open-vehicle-create` | Launch browser and open vehicle create form |
 | `pair` | `mlt-desktop://pair?session=<opaque-id>` | Start pairing workflow when unpaired |
@@ -65,7 +66,15 @@ The connector reports launch progress on each heartbeat:
 | Field | Example values |
 |---|---|
 | `launchSessionId` | opaque id from URL |
-| `launchStatus` | `app_opened`, `launch_session_redeemed`, `launch_session_rejected`, `browser_ready`, `facebook_logged_in`, `facebook_login_required`, `marketplace_ready`, `pairing_required`, `device_revoked`, `error` |
+| `launchStatus` | `app_opened`, `launch_session_redeemed`, `launch_session_rejected`, `browser_ready`, `facebook_logged_in`, `facebook_login_required`, `marketplace_ready`, `messenger_ready`, `pairing_required`, `device_revoked`, `error` |
+
+### Leads monitor handoff (`open-messenger`)
+
+1. Dashboard creates launch session with `intent: "open_messenger"` (or `start_monitoring`).
+2. Dashboard opens `mlt-desktop://open-messenger?session=<id>`.
+3. Desktop redeems via `redeem_launch_session`, then calls `acknowledge_launch_session` with `state: launching|ready|error`.
+4. Desktop opens Messenger (`open_messenger` sidecar RPC) and heartbeats `messenger_ready=true`, `messenger_state=messenger_ready`, `current_service` while the runtime holds the messenger service.
+5. Dashboard polls launch status for `launch_acknowledged` + `ackState=ready`, and device status for Monitor open.
 
 ## Lovable implementation prompt (backend)
 
