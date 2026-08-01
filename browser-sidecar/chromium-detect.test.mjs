@@ -15,7 +15,12 @@ const emptyBrowsers = fs.mkdtempSync(path.join(os.tmpdir(), "mlt-pw-empty-"));
 
 const result = spawnSync(process.execPath, [cli, "detect"], {
   cwd: __dirname,
-  env: { ...process.env, PLAYWRIGHT_BROWSERS_PATH: emptyBrowsers },
+  env: {
+    ...process.env,
+    PLAYWRIGHT_BROWSERS_PATH: emptyBrowsers,
+    // Force bundled path so system Chrome does not mask a missing Playwright browser cache.
+    MLT_FORCE_BUNDLED_BROWSER: "1",
+  },
   encoding: "utf8",
 });
 
@@ -26,12 +31,13 @@ assert.equal(json.playwright_installed, true);
 assert.equal(
   json.chromium_installed,
   false,
-  `expected chromium_installed=false when browsers path is empty, got ${line}`,
+  `expected chromium_installed=false when browsers path is empty + force bundled, got ${line}`,
 );
 assert.ok(
   json.detect_error || json.chromium_path,
   "detect should report missing path or detect_error",
 );
+assert.equal(json.browser_mode, "bundled_chromium");
 
 fs.rmSync(emptyBrowsers, { recursive: true, force: true });
 console.log("chromium-detect.test.mjs: ok");

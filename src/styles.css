@@ -410,3 +410,14 @@ footer p {
   color: #ff9d9d;
   font-size: 0.85rem;
 }
+
+.dealer-hint {
+  margin: 0.85rem 0 0;
+  padding: 0.65rem 0.75rem;
+  border-radius: 8px;
+  border: 1px solid #3d4a5c;
+  background: #1a2330;
+  color: #c5d0de;
+  font-size: 0.8rem;
+  line-height: 1.45;
+}

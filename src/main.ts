@@ -119,7 +119,12 @@ const CONNECTING_UI_MAX_MS = 45_000;
 const app = document.querySelector<HTMLDivElement>("#app")!;
 let actionInProgress: string | null = null;
 let actionError: string | null = null;
+/** Non-error dealer guidance (e.g. after Open Facebook). */
+let actionHint: string | null = null;
 let showAbout = false;
+
+const FACEBOOK_LOGIN_HINT =
+  "Sign in in the Connector browser window (not Safari). A one-time Facebook security check is normal. If Facebook asks for a security key, click Try another way and choose password or text message.";
 let chromiumProvision: ChromiumProvisionState = {
   active: false,
   progress: 0,
@@ -313,7 +318,7 @@ function computeDealerView(
       kind: "not_connected",
       subtitle:
         status.deep_link_message ??
-        "Sign into Facebook in the Connector’s browser window (not Safari). Your password stays with Facebook.",
+        "Sign into Facebook in the Connector browser (not Safari). One-time security check is normal. If it asks for a security key, click Try another way → password or text message.",
       cta: "open_facebook",
     };
   }
@@ -413,6 +418,12 @@ function render(
           : ""
       }
 
+      ${
+        actionHint
+          ? `<p class="dealer-hint" role="status">${actionHint}</p>`
+          : ""
+      }
+
       <div class="dealer-actions">
         ${primaryActions}
       </div>
@@ -423,13 +434,21 @@ function render(
             ? "Do not download another copy. Quit this window, then open the app from Applications."
             : view.kind === "updating" && (view.mode === "ready" || view.mode === "stalled")
               ? "Use the installer window to drag the app into Applications, then click I’ve finished installing."
-              : "You can close this window — the connector stays in your menu bar."
+              : view.kind === "not_connected" && view.cta === "open_facebook"
+                ? "Uses Google Chrome when installed (saved login stays on this Mac). Not Safari."
+                : "You can close this window — the connector stays in your menu bar."
         }
       </p>
 
       <details class="dealer-about" ${showAbout ? "open" : ""}>
         <summary>About</summary>
         <p class="helper">Version ${status.connector_version}</p>
+        <p class="helper">Facebook login profile: ${
+          browser.profile_path
+            ? browser.profile_path
+            : "~/Library/Application Support/com.7socialapps.mlt-desktop-connector/browser-profile"
+        }</p>
+        <p class="helper">Login survives app restarts. Prefer Google Chrome; otherwise the bundled MLT browser. Never use Safari for this session.</p>
         <button id="open-log-folder" type="button" class="dealer-linkish">Open logs folder</button>
       </details>
     </main>
@@ -563,7 +582,7 @@ function dealerFacebookError(err: unknown): string {
   ) {
     return msg.length > 400
       ? `${msg.slice(0, 380)}…`
-      : `${msg} — reinstall Desktop Connector v1.1.3+.`;
+      : `${msg} — reinstall Desktop Connector v1.1.4+.`;
   }
   if (
     msg.includes("missing") ||
@@ -571,7 +590,7 @@ function dealerFacebookError(err: unknown): string {
     msg.includes("ERR_MODULE") ||
     msg.includes("not installed")
   ) {
-    return "Browser components are missing. Quit this app and install the latest Desktop Connector (v1.1.3+), then try Open Facebook again.";
+    return "Browser components are missing. Quit this app and install the latest Desktop Connector (v1.1.4+), then try Open Facebook again.";
   }
   if (msg.includes("timed out") || msg.includes("timeout") || msg.includes("network")) {
     return msg.length > 400
@@ -588,10 +607,13 @@ async function openFacebookLogin() {
   await withAction("open_facebook", async () => {
     try {
       actionError = null;
-      // Single command: provisions Chromium if needed, recovers sidecar, opens facebook.com
+      actionHint = null;
+      // Single command: provisions browser if needed, recovers sidecar, opens facebook.com
       await invoke<BrowserManagerSnapshot>("browser_open_facebook_login");
+      actionHint = FACEBOOK_LOGIN_HINT;
     } catch (err) {
       actionError = dealerFacebookError(err);
+      actionHint = FACEBOOK_LOGIN_HINT;
       console.error(err);
     }
   });

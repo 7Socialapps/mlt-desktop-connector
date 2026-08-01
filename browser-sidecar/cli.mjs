@@ -9,6 +9,7 @@ import { createRequire } from "node:module";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { resolveBrowserLaunchTarget } from "./chrome-channel.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
@@ -73,6 +74,7 @@ function playwrightPackageVersion() {
 
 async function detectRuntime() {
   const playwrightVersion = playwrightPackageVersion();
+  const systemTarget = resolveBrowserLaunchTarget();
   const result = {
     ok: true,
     playwright_installed: Boolean(playwrightVersion),
@@ -81,6 +83,9 @@ async function detectRuntime() {
     chromium_path: null,
     node_version: process.version,
     browsers_path: process.env.PLAYWRIGHT_BROWSERS_PATH ?? null,
+    browser_mode: systemTarget.mode,
+    browser_label: systemTarget.label,
+    browser_channel: systemTarget.channel,
   };
 
   if (!playwrightVersion) {
@@ -91,14 +96,23 @@ async function detectRuntime() {
     // executablePath() returns the *expected* location even when missing —
     // always verify on disk or Open Facebook skips install and launch fails.
     const chromiumPath = chromium.executablePath();
-    const exists = Boolean(chromiumPath) && fs.existsSync(chromiumPath);
-    result.chromium_installed = exists;
-    result.chromium_path = exists ? chromiumPath : chromiumPath || null;
-    if (!exists && chromiumPath) {
-      result.detect_error = `Chromium binary missing at ${chromiumPath}`;
+    const bundledExists = Boolean(chromiumPath) && fs.existsSync(chromiumPath);
+    const systemAvailable = Boolean(systemTarget.channel && systemTarget.executable_path);
+    // Launchable if system Chrome/Edge OR bundled Chromium is present.
+    result.chromium_installed = bundledExists || systemAvailable;
+    result.chromium_path = systemAvailable
+      ? systemTarget.executable_path
+      : bundledExists
+        ? chromiumPath
+        : chromiumPath || null;
+    if (!result.chromium_installed && chromiumPath) {
+      result.detect_error = `No Google Chrome found; Chromium binary missing at ${chromiumPath}`;
     }
   } catch (err) {
-    result.chromium_installed = false;
+    result.chromium_installed = Boolean(
+      systemTarget.channel && systemTarget.executable_path,
+    );
+    result.chromium_path = systemTarget.executable_path;
     result.detect_error = err instanceof Error ? err.message : String(err);
   }
 

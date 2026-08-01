@@ -12,6 +12,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const checks = [
   ["form-controls.mjs", "marketplace/form-controls.mjs"],
   ["form-fill.mjs", "marketplace/form-fill.mjs"],
+  ["chrome-channel.mjs", "chrome-channel.mjs"],
   ["server.mjs", "server.mjs"],
 ];
 

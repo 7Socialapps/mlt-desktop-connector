@@ -26,6 +26,11 @@ import {
   profileStateWhileBrowserRunning,
   resolveBrowserProcessPid,
 } from "./browser-process.mjs";
+import {
+  browserIgnoreDefaultArgs,
+  browserLaunchArgs,
+  resolveBrowserLaunchTarget,
+} from "./chrome-channel.mjs";
 
 /** @typedef {"stopped"|"starting"|"ready"|"crashed"} BrowserState */
 /** @typedef {"profile_missing"|"profile_initializing"|"profile_ready"|"profile_locked"|"profile_corrupt"|"profile_reset_required"} ProfileState */
@@ -42,6 +47,8 @@ let profileState = "profile_missing";
 let lastFacebookDetection = null;
 /** @type {number | null} */
 let browserPid = null;
+/** @type {import("./chrome-channel.mjs").BrowserLaunchTarget | null} */
+let activeLaunchTarget = null;
 
 const LOCK_FILE = ".profile.lock";
 
@@ -164,6 +171,7 @@ function currentStatus() {
     profileState = inspectProfileOnDisk();
   }
 
+  const target = activeLaunchTarget || resolveBrowserLaunchTarget();
   return {
     browser_state: browserState,
     pid: browserPid,
@@ -171,6 +179,9 @@ function currentStatus() {
     process_alive: alive,
     profile_status: profileState,
     profile_path: profileDir() || null,
+    browser_mode: target.mode,
+    browser_label: target.label,
+    browser_channel: target.channel,
   };
 }
 
@@ -189,6 +200,7 @@ async function teardownBrowser(reason = "stop") {
 
   context = null;
   page = null;
+  activeLaunchTarget = null;
   removeLockFile();
   profileState = inspectProfileOnDisk();
 
@@ -270,45 +282,71 @@ async function handleLaunch(id) {
 
   try {
     fs.mkdirSync(dir, { recursive: true });
-    const executablePath = chromium.executablePath();
-    if (!executablePath || !fs.existsSync(executablePath)) {
-      fail(
-        id,
-        "CHROMIUM_NOT_INSTALLED",
-        `Chromium is not installed at ${executablePath || "(unknown path)"}. Click Open Facebook to download it, or reinstall the Desktop Connector.`,
-      );
-      return;
-    }
-    // Gatekeeper quarantine on first-run / DMG-copied Chromium blocks launch.
-    if (process.platform === "darwin") {
-      try {
-        const { spawnSync } = await import("node:child_process");
-        spawnSync("xattr", ["-cr", executablePath], { stdio: "ignore" });
-        const browsersRoot = process.env.PLAYWRIGHT_BROWSERS_PATH;
-        if (browsersRoot) {
-          spawnSync("xattr", ["-cr", browsersRoot], { stdio: "ignore" });
+    const launchTarget = resolveBrowserLaunchTarget();
+    activeLaunchTarget = launchTarget;
+
+    /** @type {import("playwright").LaunchPersistentContextOptions} */
+    const launchOptions = {
+      headless: false,
+      viewport: { width: 1280, height: 900 },
+      ignoreDefaultArgs: browserIgnoreDefaultArgs(),
+      args: browserLaunchArgs(),
+    };
+
+    let chromiumPath = launchTarget.executable_path;
+    if (launchTarget.channel) {
+      // System Google Chrome / Edge — better passkeys, Touch ID, and normal Chrome UX.
+      launchOptions.channel = launchTarget.channel;
+    } else {
+      const executablePath = chromium.executablePath();
+      if (!executablePath || !fs.existsSync(executablePath)) {
+        fail(
+          id,
+          "CHROMIUM_NOT_INSTALLED",
+          `No Google Chrome found and Chromium is not installed at ${executablePath || "(unknown path)"}. Install Google Chrome, or click Open Facebook to download the MLT browser, or reinstall the Desktop Connector.`,
+        );
+        return;
+      }
+      chromiumPath = executablePath;
+      launchOptions.executablePath = executablePath;
+      // Gatekeeper quarantine on first-run / DMG-copied Chromium blocks launch.
+      if (process.platform === "darwin") {
+        try {
+          const { spawnSync } = await import("node:child_process");
+          spawnSync("xattr", ["-cr", executablePath], { stdio: "ignore" });
+          const browsersRoot = process.env.PLAYWRIGHT_BROWSERS_PATH;
+          if (browsersRoot) {
+            spawnSync("xattr", ["-cr", browsersRoot], { stdio: "ignore" });
+          }
+        } catch {
+          /* best-effort */
         }
-      } catch {
-        /* best-effort */
       }
     }
+
     // Headed, large window — dealers must see Facebook login immediately.
-    context = await chromium.launchPersistentContext(dir, {
-      headless: false,
-      executablePath,
-      viewport: { width: 1280, height: 900 },
-      args: [
-        "--disable-dev-shm-usage",
-        "--new-window",
-        "--window-size=1280,900",
-        "--window-position=80,60",
-        "--start-maximized",
-      ],
-    });
+    // Persistent userDataDir keeps Facebook login across Connector restarts.
+    context = await chromium.launchPersistentContext(dir, launchOptions);
     attachDisconnectHandler();
+
+    // Soften the most obvious webdriver fingerprint (Meta may still require 2FA).
+    try {
+      await context.addInitScript(() => {
+        try {
+          Object.defineProperty(navigator, "webdriver", {
+            get: () => undefined,
+          });
+        } catch {
+          /* ignore */
+        }
+      });
+    } catch {
+      /* ignore */
+    }
+
     browserPid = resolveBrowserProcessPid(context);
     if (!browserPid) {
-      browserPid = await resolveChromiumPidFallback(executablePath);
+      browserPid = await resolveChromiumPidFallback(dir, launchTarget);
     }
     if (browserPid) {
       writeLockFile(browserPid);
@@ -316,20 +354,24 @@ async function handleLaunch(id) {
     const pages = context.pages();
     page = pages.length > 0 ? pages[0] : await context.newPage();
     await page.setViewportSize({ width: 1280, height: 900 }).catch(() => {});
-    await activateChromiumWindow(executablePath, browserPid);
+    await activateChromiumWindow(chromiumPath, browserPid, launchTarget);
     browserState = "ready";
     profileState = "profile_ready";
     emitEvent("browser_ready", {
       pid: browserPid,
       headed: true,
-      chromium_path: executablePath,
+      chromium_path: chromiumPath,
+      browser_mode: launchTarget.mode,
+      browser_label: launchTarget.label,
     });
     ok(id, {
       ...currentStatus(),
       launched: true,
       headed: true,
       pid: browserPid,
-      chromium_path: executablePath,
+      chromium_path: chromiumPath,
+      browser_mode: launchTarget.mode,
+      browser_label: launchTarget.label,
       current_url: page.url(),
       page_title: await page.title().catch(() => ""),
     });
@@ -431,20 +473,25 @@ async function handleOpenFacebookLogin(id) {
       timeout: 60_000,
     });
     await page.waitForTimeout(1500);
-    const executablePath = (() => {
-      try {
-        return chromium.executablePath();
-      } catch {
-        return null;
-      }
-    })();
-    await activateChromiumWindow(executablePath, browserPid);
+    const target = activeLaunchTarget || resolveBrowserLaunchTarget();
+    const executablePath =
+      target.executable_path ||
+      (() => {
+        try {
+          return chromium.executablePath();
+        } catch {
+          return null;
+        }
+      })();
+    await activateChromiumWindow(executablePath, browserPid, target);
     const detection = await runFacebookDetection();
     ok(id, {
       navigated: true,
       headed: true,
       pid: browserPid,
       chromium_path: executablePath,
+      browser_mode: target.mode,
+      browser_label: target.label,
       facebook: detection ?? lastFacebookDetection,
     });
   } catch (err) {
@@ -461,10 +508,13 @@ async function handleOpenFacebookLogin(id) {
 }
 
 /**
- * Force the headed Chromium window onto the user's screen (macOS Dock bounce).
+ * Force the headed browser window onto the user's screen (macOS Dock bounce).
  * Playwright page.bringToFront alone is often invisible behind the connector.
+ * @param {string | null | undefined} executablePath
+ * @param {number | null | undefined} pid
+ * @param {import("./chrome-channel.mjs").BrowserLaunchTarget | null | undefined} launchTarget
  */
-async function activateChromiumWindow(executablePath, pid) {
+async function activateChromiumWindow(executablePath, pid, launchTarget) {
   if (process.platform !== "darwin") {
     try {
       await page?.bringToFront();
@@ -473,6 +523,8 @@ async function activateChromiumWindow(executablePath, pid) {
     }
     return;
   }
+  const target = launchTarget || activeLaunchTarget || resolveBrowserLaunchTarget();
+  const processHint = target.process_name_hint || "Chrome";
   try {
     const { spawnSync } = await import("node:child_process");
     let appBundle = null;
@@ -482,16 +534,12 @@ async function activateChromiumWindow(executablePath, pid) {
     if (appBundle && fs.existsSync(appBundle)) {
       // open -a brings the app forward and makes Dock show a bounce.
       spawnSync("open", ["-a", appBundle], { stdio: "ignore" });
+    } else if (target.mode === "system_chrome") {
+      spawnSync("open", ["-a", "Google Chrome"], { stdio: "ignore" });
+    } else if (target.mode === "system_edge") {
+      spawnSync("open", ["-a", "Microsoft Edge"], { stdio: "ignore" });
     }
-    const script = [
-      'tell application "System Events"',
-      '  set procs to every process whose name contains "Chrome for Testing"',
-      "  repeat with p in procs",
-      "    set frontmost of p to true",
-      "  end repeat",
-      "end tell",
-    ].join("\n");
-    spawnSync("osascript", ["-e", script], { stdio: "ignore" });
+    // Prefer PID when known — system Chrome may have other windows open.
     if (pid) {
       spawnSync(
         "osascript",
@@ -501,6 +549,17 @@ async function activateChromiumWindow(executablePath, pid) {
         ],
         { stdio: "ignore" },
       );
+    } else {
+      const escaped = processHint.replace(/"/g, "");
+      const script = [
+        'tell application "System Events"',
+        `  set procs to every process whose name contains "${escaped}"`,
+        "  repeat with p in procs",
+        "    set frontmost of p to true",
+        "  end repeat",
+        "end tell",
+      ].join("\n");
+      spawnSync("osascript", ["-e", script], { stdio: "ignore" });
     }
   } catch {
     /* best-effort visibility */
@@ -512,24 +571,44 @@ async function activateChromiumWindow(executablePath, pid) {
   }
 }
 
-async function resolveChromiumPidFallback(executablePath) {
-  if (process.platform !== "darwin" || !executablePath) {
+/**
+ * Find our headed browser PID by the dedicated MLT user-data-dir (safe with system Chrome).
+ * @param {string} profilePath
+ * @param {import("./chrome-channel.mjs").BrowserLaunchTarget | null | undefined} launchTarget
+ */
+async function resolveChromiumPidFallback(profilePath, launchTarget) {
+  if (process.platform !== "darwin" || !profilePath) {
     return null;
   }
   try {
     const { spawnSync } = await import("node:child_process");
-    const result = spawnSync("pgrep", ["-f", "Google Chrome for Testing"], {
+    // Match our persistent profile path so we never grab the dealer's everyday Chrome.
+    const result = spawnSync("pgrep", ["-f", profilePath], {
       encoding: "utf8",
     });
-    if (result.status !== 0 || !result.stdout?.trim()) {
-      return null;
+    if (result.status === 0 && result.stdout?.trim()) {
+      const pids = result.stdout
+        .trim()
+        .split(/\s+/)
+        .map((s) => Number(s))
+        .filter((n) => Number.isFinite(n) && n > 0);
+      if (pids[0]) return pids[0];
     }
-    const pids = result.stdout
-      .trim()
-      .split(/\s+/)
-      .map((s) => Number(s))
-      .filter((n) => Number.isFinite(n) && n > 0);
-    return pids[0] ?? null;
+    const target = launchTarget || activeLaunchTarget || resolveBrowserLaunchTarget();
+    if (target.mode === "bundled_chromium") {
+      const testing = spawnSync("pgrep", ["-f", "Google Chrome for Testing"], {
+        encoding: "utf8",
+      });
+      if (testing.status === 0 && testing.stdout?.trim()) {
+        const pids = testing.stdout
+          .trim()
+          .split(/\s+/)
+          .map((s) => Number(s))
+          .filter((n) => Number.isFinite(n) && n > 0);
+        return pids[0] ?? null;
+      }
+    }
+    return null;
   } catch {
     return null;
   }
@@ -817,18 +896,22 @@ async function handleBringBrowserForward(id) {
     return;
   }
   try {
-    const executablePath = (() => {
-      try {
-        return chromium.executablePath();
-      } catch {
-        return null;
-      }
-    })();
-    await activateChromiumWindow(executablePath, browserPid);
+    const target = activeLaunchTarget || resolveBrowserLaunchTarget();
+    const executablePath =
+      target.executable_path ||
+      (() => {
+        try {
+          return chromium.executablePath();
+        } catch {
+          return null;
+        }
+      })();
+    await activateChromiumWindow(executablePath, browserPid, target);
     ok(id, {
       brought_forward: true,
       pid: browserPid,
       headed: true,
+      browser_label: target.label,
       current_url: page.url(),
     });
   } catch (err) {
