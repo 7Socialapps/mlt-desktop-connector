@@ -110,8 +110,60 @@ pub fn resolve_sidecar_server() -> Result<PathBuf> {
 
 fn resolve_node_binary() -> PathBuf {
     if let Ok(node) = std::env::var("MLT_NODE_BINARY") {
-        return PathBuf::from(node);
+        let path = PathBuf::from(node);
+        if path.exists() {
+            return path;
+        }
     }
+
+    // Packaged builds should ship Node under resources/node/ (see MILESTONE-2-PACKAGING).
+    if let Some(root) = RESOURCE_ROOT.get() {
+        for candidate in [
+            root.join("node").join("bin").join("node"),
+            root.join("node").join("node"),
+            root.join("node"),
+        ] {
+            if candidate.exists() {
+                return candidate;
+            }
+        }
+    }
+
+    // GUI-launched macOS apps often lack Homebrew on PATH — probe common locations.
+    #[cfg(target_os = "macos")]
+    {
+        for candidate in [
+            "/opt/homebrew/bin/node",
+            "/usr/local/bin/node",
+            "/usr/bin/node",
+        ] {
+            let path = PathBuf::from(candidate);
+            if path.exists() {
+                return path;
+            }
+        }
+    }
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(program_files) = std::env::var("ProgramFiles") {
+            let path = PathBuf::from(program_files)
+                .join("nodejs")
+                .join("node.exe");
+            if path.exists() {
+                return path;
+            }
+        }
+    }
+    #[cfg(target_os = "linux")]
+    {
+        for candidate in ["/usr/local/bin/node", "/usr/bin/node"] {
+            let path = PathBuf::from(candidate);
+            if path.exists() {
+                return path;
+            }
+        }
+    }
+
     PathBuf::from("node")
 }
 

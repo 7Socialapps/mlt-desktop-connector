@@ -16,13 +16,13 @@ Until assets are attached, the UI opens this page and does **not** invent a file
 
 ## Expected asset filenames (Tauri defaults)
 
-Publish these names (version from `src-tauri/tauri.conf.json`, currently `1.0.4`):
+Publish these names (version from `src-tauri/tauri.conf.json`, currently `1.0.5`):
 
 | Platform | Example asset name | Notes |
 |---|---|---|
-| macOS Apple Silicon | `MLT Desktop Connector_1.0.4_aarch64.dmg` | Primary Mac download |
-| macOS Intel | `MLT Desktop Connector_1.0.4_x64.dmg` | Optional |
-| Windows | `MLT Desktop Connector_1.0.4_x64-setup.exe` or `…_x64_en-US.msi` | Primary Windows download |
+| macOS Apple Silicon | `MLT Desktop Connector_1.0.5_aarch64.dmg` | Primary Mac download |
+| macOS Intel | `MLT Desktop Connector_1.0.5_x64.dmg` | Optional |
+| Windows | `MLT Desktop Connector_1.0.5_x64-setup.exe` or `…_x64_en-US.msi` | Primary Windows download |
 
 Dashboard matchers (case-insensitive):
 
@@ -33,19 +33,18 @@ Dashboard matchers (case-insensitive):
 ## Publish checklist (operator)
 
 1. Build signed/notarized installers when Apple/Windows signing is ready (`docs/SIGNING-STATUS.md`).
-2. Tag: `v1.0.4` (match app version).
-3. `gh release create v1.0.4 ./path/to/*.dmg ./path/to/*.msi --title "MLT Desktop Connector 1.0.4" --notes "…"`.
+2. Tag: `v1.0.5` (match app version).
+3. `gh release create v1.0.5 ./path/to/*.dmg ./path/to/*.msi --title "MLT Desktop Connector 1.0.5" --notes "…"`.
 4. Confirm API returns assets:  
    `curl -s https://api.github.com/repos/7Socialapps/mlt-desktop-connector/releases/latest | jq '.assets[].name'`.
-5. Dashboard “Download & Install” buttons light up automatically — no dashboard redeploy required for new asset URLs.
+5. Dashboard Connect uses direct asset URLs from the Releases API — no HTML releases tab.
 
 ## Current status (2026-08-01)
 
 | Item | Status |
 |---|---|
-| GitHub Release `v1.0.3` | **Published** (allowlisted beta) |
-| macOS Apple Silicon `.dmg` | **Published** — `…_aarch64.dmg` |
-| macOS Intel `.dmg` | **Published** — `…_x64.dmg` |
+| GitHub Release `v1.0.5` | Target — simplified dealer UI + prod tqv |
+| Production Supabase | **tqv** `tqvlledtafjefdtpyocd` (not staging otp) |
 | Windows `.exe` / `.msi` | **CI** — `.github/workflows/release-windows.yml` (workflow_dispatch) |
 | Apple notarization | **Not configured** (`docs/SIGNING-STATUS.md`) |
 | Windows code signing | **Not configured** |
@@ -58,4 +57,4 @@ Do not upload an incomplete or unsigned build as a “production” latest relea
 ## Rollback
 
 - Delete or unpublish the bad release tag, or mark an older release as latest.
-- Dashboard falls back to the releases page when no matching asset exists.
+- Dashboard toasts “Download unavailable — contact support” when no matching asset exists (does not open GitHub HTML).

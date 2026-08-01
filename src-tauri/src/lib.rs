@@ -536,7 +536,25 @@ pub fn run() {
                 paired,
                 "MLT Desktop Connector shell ready"
             );
-            startup_log("setup complete — deferred init queued for Ready");
+
+            // IMPORTANT: In Tauri 2, setup() already runs as part of Ready handling.
+            // Waiting for RunEvent::Ready in .run() never fires after setup, so deferred
+            // init + deep-link drain never ran — blank UI / Connect never redeemed.
+            // Spawn after a short yield so the webview can paint first.
+            if let Some(pending) = app.try_state::<PendingDeferredStartup>() {
+                if let Some(deferred) = pending.0.lock().take() {
+                    startup_log("setup complete — scheduling deferred init");
+                    tauri::async_runtime::spawn(async move {
+                        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                        startup_log("deferred init starting (post-setup)");
+                        deferred.run().await;
+                    });
+                } else {
+                    startup_log("setup complete — deferred init already taken");
+                }
+            } else {
+                startup_log("setup complete — no deferred init pending");
+            }
 
             Ok(())
         })
@@ -575,10 +593,11 @@ pub fn run() {
         .expect("error while building tauri application")
         .run(|app_handle, event| {
             match event {
+                // Keep as a safety net if Ready is ever delivered after setup in some runtime.
                 RunEvent::Ready => {
                     if let Some(pending) = app_handle.try_state::<PendingDeferredStartup>() {
                         if let Some(deferred) = pending.0.lock().take() {
-                            startup_log("RunEvent::Ready — starting deferred init");
+                            startup_log("RunEvent::Ready — starting deferred init (fallback)");
                             deferred.spawn();
                         }
                     }

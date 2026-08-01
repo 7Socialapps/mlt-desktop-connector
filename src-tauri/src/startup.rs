@@ -43,14 +43,14 @@ pub struct DeferredStartup {
 }
 
 impl DeferredStartup {
-    /// Queue deferred init on the Tauri async runtime (call from `RunEvent::Ready`).
+    /// Queue deferred init on the Tauri async runtime.
     pub fn spawn(self) {
         tauri::async_runtime::spawn(async move {
             self.run().await;
         });
     }
 
-    async fn run(self) {
+    pub async fn run(self) {
         startup_log("deferred: ui ready — background services starting");
 
         self.restore_credentials().await;
