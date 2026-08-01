@@ -1,0 +1,99 @@
+# Build unsigned Windows installers (NSIS .exe + MSI) and attach them to an
+# existing GitHub Release. Mac assets are produced locally; Windows needs
+# windows-latest (no useful cross-compile from macOS).
+#
+# Required repository secrets (compile-time embed via src-tauri/build.rs):
+#   MLT_SUPABASE_URL
+#   MLT_SUPABASE_ANON_KEY
+#
+# Manual run:
+#   gh workflow run release-windows.yml -f release_tag=v1.0.3
+
+name: Release Windows
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing GitHub release tag to upload installers to
+        required: true
+        default: v1.0.3
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-windows-${{ github.event.inputs.release_tag || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Verify production secrets
+        shell: bash
+        env:
+          MLT_SUPABASE_URL: ${{ secrets.MLT_SUPABASE_URL }}
+          MLT_SUPABASE_ANON_KEY: ${{ secrets.MLT_SUPABASE_ANON_KEY }}
+        run: |
+          if [ -z "${MLT_SUPABASE_URL}" ] || [ -z "${MLT_SUPABASE_ANON_KEY}" ]; then
+            echo "Missing MLT_SUPABASE_URL or MLT_SUPABASE_ANON_KEY repository secrets." >&2
+            exit 1
+          fi
+
+      - name: Build production Windows bundles
+        shell: bash
+        env:
+          MLT_ENV: production
+          MLT_SUPABASE_URL: ${{ secrets.MLT_SUPABASE_URL }}
+          MLT_SUPABASE_ANON_KEY: ${{ secrets.MLT_SUPABASE_ANON_KEY }}
+          VITE_MLT_ENV: production
+          VITE_MLT_SUPABASE_URL: ${{ secrets.MLT_SUPABASE_URL }}
+          # WebView2 bootstrapper is pulled by Tauri NSIS; keep CI non-interactive.
+          CI: true
+        run: |
+          set -euo pipefail
+          npm run build
+          npx tauri build
+          echo "Bundle tree:"
+          find src-tauri/target/release/bundle -maxdepth 4 -type f | sort || true
+
+      - name: Upload installers to release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          mapfile -t upload < <(
+            find src-tauri/target/release/bundle/msi src-tauri/target/release/bundle/nsis \
+              -type f \( -name '*.msi' -o -name '*setup.exe' \) 2>/dev/null | sort -u
+          )
+          if [ ${#upload[@]} -eq 0 ]; then
+            echo "ERROR: no .msi / NSIS setup.exe under src-tauri/target/release/bundle" >&2
+            find src-tauri/target/release/bundle -type f 2>/dev/null || true
+            exit 1
+          fi
+          echo "Uploading to release ${TAG}:"
+          printf '  %s\n' "${upload[@]}"
+          gh release view "$TAG" >/dev/null
+          gh release upload "$TAG" "${upload[@]}" --clobber
+          echo "Assets on ${TAG} after upload:"
+          gh release view "$TAG" --json assets --jq '.assets[].name'
