@@ -26,11 +26,19 @@ interface ChromiumProvisionState {
 
 interface UpdateUiState {
   active: boolean;
-  phase: "idle" | "checking" | "downloading" | "ready_to_install" | "error";
+  phase:
+    | "idle"
+    | "checking"
+    | "downloading"
+    | "ready_to_install"
+    | "install_stalled"
+    | "error";
   message: string;
   available_version: string | null;
   progress: number;
   error: string | null;
+  installer_path: string | null;
+  timed_out: boolean;
 }
 
 interface PairingState {
@@ -119,6 +127,8 @@ let updateState: UpdateUiState = {
   available_version: null,
   progress: 0,
   error: null,
+  installer_path: null,
+  timed_out: false,
 };
 let setupStartedAt: number | null = null;
 let connectingStartedAt: number | null = null;
@@ -127,7 +137,13 @@ let forceNotConnected = false;
 type DealerView =
   | { kind: "starting"; subtitle: string }
   | { kind: "setup"; subtitle: string; progress?: number }
-  | { kind: "updating"; subtitle: string; progress?: number }
+  | {
+      kind: "updating";
+      subtitle: string;
+      progress?: number;
+      /** Download in progress vs installer open / stalled (finishable). */
+      mode: "downloading" | "ready" | "stalled";
+    }
   | { kind: "connecting"; subtitle: string }
   | { kind: "not_connected"; subtitle: string; cta: "connect" | "open_facebook" | "retry" }
   | { kind: "connected"; subtitle: string };
@@ -149,18 +165,32 @@ function connectingTimedOut(): boolean {
   return Date.now() - connectingStartedAt >= CONNECTING_UI_MAX_MS;
 }
 
+function isUpdateFinishablePhase(phase: UpdateUiState["phase"]): boolean {
+  return phase === "ready_to_install" || phase === "install_stalled";
+}
+
 function computeDealerView(
   status: ConnectorStatus,
   pairing: PairingState,
   browser: BrowserManagerSnapshot,
   runtime: RuntimeStatus,
 ): DealerView {
-  if (updateState.active || updateState.phase === "ready_to_install") {
+  if (
+    updateState.active ||
+    isUpdateFinishablePhase(updateState.phase) ||
+    updateState.phase === "checking" ||
+    updateState.phase === "downloading"
+  ) {
+    const stalled =
+      updateState.phase === "install_stalled" || updateState.timed_out;
+    const ready = isUpdateFinishablePhase(updateState.phase);
     const subtitle =
       updateState.message ||
-      (updateState.phase === "ready_to_install"
-        ? "Update ready — finish installing, then reopen the app."
-        : "Updating…");
+      (stalled
+        ? "Still on the old version. Finish installing, or open the installer again."
+        : ready
+          ? "Installer open — drag to Applications, then reopen from Applications."
+          : "Updating…");
     return {
       kind: "updating",
       subtitle,
@@ -168,6 +198,7 @@ function computeDealerView(
         updateState.phase === "downloading" || updateState.phase === "checking"
           ? updateState.progress
           : undefined,
+      mode: stalled ? "stalled" : ready ? "ready" : "downloading",
     };
   }
 
@@ -287,12 +318,27 @@ function render(
     view.kind === "connected"
       ? "Connected"
       : view.kind === "updating"
-        ? "Updating…"
+        ? view.mode === "ready" || view.mode === "stalled"
+          ? "Installer open"
+          : "Updating…"
         : view.kind === "connecting"
           ? "Connecting…"
           : view.kind === "setup" || view.kind === "starting"
             ? "Setting up…"
             : "Not connected";
+
+  const updateActions =
+    view.kind === "updating" && (view.mode === "ready" || view.mode === "stalled")
+      ? `<button id="finish-install" class="dealer-primary" ${busy ? "disabled" : ""}>I've finished installing</button>
+         ${
+           view.mode === "stalled"
+             ? `<button id="reopen-installer" class="dealer-secondary" ${busy ? "disabled" : ""}>Open installer again</button>
+                <button id="retry-update" class="dealer-secondary" ${busy ? "disabled" : ""}>Retry</button>`
+             : `<button id="reopen-installer" class="dealer-secondary" ${busy ? "disabled" : ""}>Open installer again</button>`
+         }`
+      : view.kind === "updating"
+        ? `<button class="dealer-primary" disabled>Updating…</button>`
+        : "";
 
   app.innerHTML = `
     <main class="dealer-shell">
@@ -325,27 +371,28 @@ function render(
 
       <div class="dealer-actions">
         ${
-          view.kind === "connected"
-            ? `<button id="primary-cta" class="dealer-primary" ${busy ? "disabled" : ""}>Open Facebook</button>`
-            : view.kind === "setup" ||
-                view.kind === "starting" ||
-                view.kind === "updating" ||
-                view.kind === "connecting"
-              ? `<button class="dealer-primary" disabled>${
-                  view.kind === "updating"
-                    ? "Updating…"
-                    : view.kind === "connecting"
-                      ? "Connecting…"
-                      : "Please wait…"
-                }</button>`
-              : `<button id="primary-cta" class="dealer-primary" ${busy ? "disabled" : ""}>${
-                  busy ? "Working…" : primaryLabel
-                }</button>`
+          view.kind === "updating"
+            ? updateActions
+            : view.kind === "connected"
+              ? `<button id="primary-cta" class="dealer-primary" ${busy ? "disabled" : ""}>Open Facebook</button>`
+              : view.kind === "setup" ||
+                  view.kind === "starting" ||
+                  view.kind === "connecting"
+                ? `<button class="dealer-primary" disabled>${
+                    view.kind === "connecting" ? "Connecting…" : "Please wait…"
+                  }</button>`
+                : `<button id="primary-cta" class="dealer-primary" ${busy ? "disabled" : ""}>${
+                    busy ? "Working…" : primaryLabel
+                  }</button>`
         }
       </div>
 
       <p class="dealer-footnote">
-        You can close this window — the connector stays in your menu bar.
+        ${
+          view.kind === "updating" && (view.mode === "ready" || view.mode === "stalled")
+            ? "Use the installer window to drag the app into Applications, then click the button above."
+            : "You can close this window — the connector stays in your menu bar."
+        }
       </p>
 
       <details class="dealer-about" ${showAbout ? "open" : ""}>
@@ -364,6 +411,9 @@ function bindActions(view: DealerView, _status: ConnectorStatus) {
     showAbout = (e.target as HTMLDetailsElement).open;
   });
   document.querySelector("#open-log-folder")?.addEventListener("click", () => void openLogFolder());
+  document.querySelector("#finish-install")?.addEventListener("click", () => void finishInstall());
+  document.querySelector("#reopen-installer")?.addEventListener("click", () => void reopenInstaller());
+  document.querySelector("#retry-update")?.addEventListener("click", () => void retryUpdate());
   document.querySelector("#primary-cta")?.addEventListener("click", () => {
     if (view.kind === "connected") {
       void openFacebookLogin();
@@ -399,6 +449,49 @@ async function withAction(name: string, fn: () => Promise<void>) {
     actionInProgress = null;
     await refresh();
   }
+}
+
+async function finishInstall() {
+  await withAction("finish_install", async () => {
+    try {
+      await invoke("finish_update_install");
+      // Process should exit; if not, show guidance.
+      actionError =
+        "If the app didn’t reopen, open MLT Desktop Connector from Applications (not the installer window).";
+    } catch (err) {
+      actionError =
+        typeof err === "string"
+          ? err
+          : "Drag the app to Applications first, then click I’ve finished installing.";
+      console.error(err);
+    }
+  });
+}
+
+async function reopenInstaller() {
+  await withAction("reopen_installer", async () => {
+    try {
+      await invoke("reopen_update_installer");
+    } catch (err) {
+      actionError =
+        typeof err === "string"
+          ? err
+          : "Couldn’t open the installer. Click Retry to download again.";
+      console.error(err);
+    }
+  });
+}
+
+async function retryUpdate() {
+  await withAction("retry_update", async () => {
+    try {
+      actionError = null;
+      await invoke("check_for_updates");
+    } catch (err) {
+      actionError = "Couldn’t check for updates. Try again in a moment.";
+      console.error(err);
+    }
+  });
 }
 
 async function openFacebookLogin() {
@@ -439,7 +532,11 @@ async function refresh() {
       invoke<UpdateUiState>("get_update_state"),
     ]);
     chromiumProvision = provision;
-    updateState = update;
+    updateState = {
+      ...update,
+      installer_path: update.installer_path ?? null,
+      timed_out: update.timed_out ?? false,
+    };
     if (update.phase === "error" && update.message && !actionError) {
       actionError = update.message;
     }
@@ -476,7 +573,11 @@ async function main() {
       refreshSafe();
     }),
     listen<UpdateUiState>("connector://update-changed", (event) => {
-      updateState = event.payload;
+      updateState = {
+        ...event.payload,
+        installer_path: event.payload.installer_path ?? null,
+        timed_out: event.payload.timed_out ?? false,
+      };
       refreshSafe();
     }),
   ]).catch(() => {

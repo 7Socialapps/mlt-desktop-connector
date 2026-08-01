@@ -330,6 +330,9 @@ footer p {
 
 .dealer-actions {
   margin-top: 1.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
 }
 
 .dealer-primary {
@@ -345,6 +348,23 @@ footer p {
 }
 
 .dealer-primary:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.dealer-secondary {
+  width: 100%;
+  padding: 0.7rem 1rem;
+  border: 1px solid #3a4658;
+  border-radius: 10px;
+  background: transparent;
+  color: #e7ecf3;
+  font-size: 0.95rem;
+  font-weight: 550;
+  cursor: pointer;
+}
+
+.dealer-secondary:disabled {
   opacity: 0.55;
   cursor: not-allowed;
 }
