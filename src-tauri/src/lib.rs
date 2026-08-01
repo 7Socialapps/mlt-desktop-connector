@@ -35,6 +35,7 @@ use services::{
     enable_polling_if_authenticated, run_connection_tests, BrowserHealthService,
     ChromiumProvisionService, ChromiumProvisionState, ConnectionTestReport, DeepLinkCoordinator,
     DeepLinkUiState, HeartbeatService, PairingCoordinator, PairingUiState, PollingService,
+    UpdateUiState, UpdaterService,
 };
 use services::reconnect::ReconnectService;
 use startup::{mark_startup_begin, startup_log, DeferredStartup};
@@ -67,6 +68,7 @@ struct AppServices {
     facebook_runtime: Arc<FacebookRuntime>,
     deep_link: Arc<DeepLinkCoordinator>,
     chromium_provision: Arc<ChromiumProvisionService>,
+    updater: Arc<UpdaterService>,
 }
 
 #[tauri::command]
@@ -276,6 +278,16 @@ fn get_chromium_provision_state(
 }
 
 #[tauri::command]
+fn get_update_state(services: tauri::State<'_, AppServices>) -> UpdateUiState {
+    services.updater.snapshot()
+}
+
+#[tauri::command]
+fn check_for_updates(app: tauri::AppHandle, services: tauri::State<'_, AppServices>) {
+    services.updater.request_check(app);
+}
+
+#[tauri::command]
 async fn reconnect_device(services: tauri::State<'_, AppServices>) -> Result<state::StatusSnapshot, String> {
     let refreshed = ReconnectService::try_refresh_tokens(services.api_client.as_ref()).await;
     services.heartbeat.trigger_now();
@@ -459,6 +471,8 @@ pub fn run() {
                 polling.clone(),
             ));
 
+            let updater = UpdaterService::new();
+
             let deep_link = Arc::new(DeepLinkCoordinator::new(
                 app.handle().clone(),
                 state.clone(),
@@ -466,6 +480,7 @@ pub fn run() {
                 facebook_runtime.clone(),
                 launch_sessions,
                 heartbeat.clone(),
+                updater.clone(),
             ));
 
             let chromium_provision =
@@ -499,6 +514,7 @@ pub fn run() {
                 facebook_runtime,
                 deep_link: deep_link.clone(),
                 chromium_provision: chromium_provision.clone(),
+                updater: updater.clone(),
             });
             app.manage(PendingDeferredStartup(Mutex::new(Some(DeferredStartup {
                 app: app.handle().clone(),
@@ -520,6 +536,8 @@ pub fn run() {
             register_deep_links_if_supported(app.handle());
             enqueue_startup_deep_links(app.handle(), &deep_link_for_listeners);
             listen_for_deep_links(app.handle(), deep_link_for_listeners);
+
+            updater.spawn_periodic(app.handle().clone());
 
             if let Some(pending) = app.try_state::<PendingDeepLinks>() {
                 if let Some(services) = app.try_state::<AppServices>() {
@@ -587,7 +605,9 @@ pub fn run() {
             open_log_folder,
             reconnect_device,
             get_deep_link_state,
-            get_chromium_provision_state
+            get_chromium_provision_state,
+            get_update_state,
+            check_for_updates
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
